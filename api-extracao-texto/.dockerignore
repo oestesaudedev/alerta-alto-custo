@@ -2,4 +2,9 @@ node_modules
 dist
 ocr-tmp
 .env
-test/e2e/amostras
+.env.*
+!.env.example
+test
+*.log
+.git
+README.md

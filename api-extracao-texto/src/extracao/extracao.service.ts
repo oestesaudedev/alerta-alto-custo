@@ -44,7 +44,7 @@ export class ExtracaoService {
     return this.extrairConteudo(nome, buffer);
   }
 
-  async extrairDoSftp(arquivo: string): Promise<ExtrairResult> {
+  async extrairDoSftp(arquivo: string, ambiente: string): Promise<ExtrairResult> {
     const nome = arquivo.trim();
     if (!nome || /[\\/]/.test(nome) || nome === '.' || nome === '..') {
       return { ok: false, erro: 'nome de arquivo inválido' };
@@ -56,10 +56,10 @@ export class ExtracaoService {
 
     let buffer: Buffer;
     try {
-      buffer = await this.sftp.baixar(nome);
+      buffer = await this.sftp.baixar(nome, ambiente);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Falha no SFTP (${nome}): ${msg}`);
+      this.logger.error(`Falha no SFTP ${this.sftp.perfil(ambiente)} (${nome}): ${msg}`);
       return { ok: false, erro: msg };
     }
     return this.extrairConteudo(nome, buffer);
@@ -129,8 +129,18 @@ export class ExtracaoService {
     pdfPath: string,
     sessionDir: string,
   ): Promise<string> {
+    // Limite de páginas: o job Protheus espera no máximo __API_TIMEOUT por anexo, e um timeout
+    // lá é tratado como falha temporária, que prenderia o job nessa B71 a cada execução.
+    const maxPaginas = Math.max(1, Number(this.config.get('PDF_MAX_PAGINAS', '30')) || 30);
+    const total = await this.contarPaginas(pdfPath);
+    if (total > maxPaginas) {
+      this.logger.warn(
+        `PDF com ${total} páginas — OCR só das ${maxPaginas} primeiras (PDF_MAX_PAGINAS)`,
+      );
+    }
+
     const prefix = path.join(sessionDir, 'page');
-    await execFileAsync('pdftoppm', ['-png', pdfPath, prefix], {
+    await execFileAsync('pdftoppm', ['-png', '-f', '1', '-l', String(maxPaginas), pdfPath, prefix], {
       timeout: 120_000,
       maxBuffer: 20 * 1024 * 1024,
     });
@@ -148,6 +158,17 @@ export class ExtracaoService {
       partes.push(await this.ocrImagem(path.join(sessionDir, file)));
     }
     return partes.join('\n\n').trim();
+  }
+
+  // 0 quando o pdfinfo não consegue ler o PDF; nesse caso só vale o limite do pdftoppm
+  private async contarPaginas(pdfPath: string): Promise<number> {
+    try {
+      const { stdout } = await execFileAsync('pdfinfo', [pdfPath], { timeout: 30_000 });
+      const m = /^Pages:\s+(\d+)/m.exec(stdout ?? '');
+      return m ? Number(m[1]) : 0;
+    } catch {
+      return 0;
+    }
   }
 
   private async ocrImagem(imagePath: string): Promise<string> {

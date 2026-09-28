@@ -1,0 +1,6 @@
+# Override de dev/testes: monta os scripts e amostras da fase 4 no container.
+# Uso: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
+services:
+  api-extracao:
+    volumes:
+      - ../api-extracao-texto/test:/app/test

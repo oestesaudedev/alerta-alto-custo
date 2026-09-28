@@ -17,6 +17,6 @@ export class ExtracaoController {
   @Post('extrair-sftp')
   @HttpCode(200)
   async extrairSftp(@Body() body: ExtrairSftpDto): Promise<ExtrairResult> {
-    return this.extracao.extrairDoSftp(body.arquivo);
+    return this.extracao.extrairDoSftp(body.arquivo, body.ambiente);
   }
 }

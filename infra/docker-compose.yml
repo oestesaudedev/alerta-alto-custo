@@ -1,26 +1,31 @@
-# API NestJS de extração + OCR (fases 3 e 4)
-# Uso: docker compose -f infra/docker-compose.yml up -d --build
+# API NestJS de extração + OCR — compose base (produção)
+# Produção: API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build
+# Dev/testes: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 # Porta do host: API_HOST_PORT (padrão 3010)
 services:
   api-extracao:
     build:
       context: ../api-extracao-texto
       dockerfile: Dockerfile
+    image: alerta-alto-custo:latest
     container_name: api-extracao-texto
-    # API_TOKEN vem do .env da API (fora do git); os valores abaixo têm precedência sobre ele
+    # API_TOKEN e SFTP_* vêm do .env da API (fora do git; copiar de .env.example).
+    # Os valores abaixo têm precedência sobre ele.
     env_file:
       - ../api-extracao-texto/.env
     environment:
       PORT: "3010"
       OCR_TMP_DIR: /tmp/ocr-extracao
       PDF_MIN_TEXT_CHARS: "40"
+      PDF_MAX_PAGINAS: "30"
       BODY_LIMIT: 25mb
     ports:
       - "${API_HOST_PORT:-3010}:3010"
-    volumes:
-      - ocr-tmp:/tmp/ocr-extracao
-      - ../api-extracao-texto/test:/app/test
+    # init encerra os filhos (pdftoppm/tesseract) junto com o node
+    init: true
     restart: unless-stopped
-
-volumes:
-  ocr-tmp:
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

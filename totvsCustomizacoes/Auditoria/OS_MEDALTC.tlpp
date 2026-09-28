@@ -54,7 +54,8 @@
 #DEFINE __R_ERRO     4
 #DEFINE __R_DEFINIT  5
 
-#DEFINE __API_TIMEOUT 120
+// Segundos por anexo. A API limita o OCR de PDF a PDF_MAX_PAGINAS paginas para caber aqui
+#DEFINE __API_TIMEOUT 300
 
 // Termos com menos letras que isso geram falso positivo no texto do OCR
 #DEFINE __MIN_TERMO  4
@@ -94,7 +95,8 @@ Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP = __CODDEP)
   -> API de extracao (__API_URL) com o ACB_OBJETO: a API baixa o arquivo do SFTP e devolve o texto
   -> match BR8/BA8 (BR8_ALTCUS = '1') -> e-mail para __MAIL_TO.
 
-As credenciais do SFTP ficam no .env da API, nao no Protheus.
+As credenciais do SFTP ficam no .env da API, nao no Protheus. O job envia o ambiente
+(GetEnvServer) no POST e a API usa o SFTP de producao quando ele e CYWSXT_PROD, senao o de dev.
 
 URL da API por ambiente (GetEnvServer): CYWSXT_PROD -> http://10.1.5.14:6177/extrair-sftp;
 qualquer outro -> http://localhost:3010/extrair-sftp.
@@ -429,7 +431,7 @@ Return .T.
 Procura os termos de cada medicamento nos textos extraidos da B71.
 A comparacao e por palavra inteira, com texto e termos normalizados por fLimpa().
 @type function
-@return array, { {cCodPsa, cDescri, cTermo, cObjeto, cCodPad, cVlrTab, cVlrGui}, ... } — no maximo
+@return array, { {cCodPsa, cDescri, cTermo, cObjeto, cCodPad, cVlrTab, cVlrGui}, ... } ï¿½ no maximo
 	uma ocorrencia por medicamento em cada anexo. cVlrGui e preenchido depois por fValorGuia()
 /*/
 Static Function fBuscaMed(aItem, aMed)
@@ -695,8 +697,8 @@ Static Function fProcessaB71(aItem)
 Return .T.
 
 /*/{Protheus.doc} fExtraiTexto
-Pede a API de extracao o texto de um anexo: POST {"arquivo": ACB_OBJETO} em __API_URL.
-A API baixa o arquivo do SFTP e devolve {ok, texto, metodo} ou {ok:false, erro}.
+Pede a API de extracao o texto de um anexo: POST {"arquivo": ACB_OBJETO, "ambiente": GetEnvServer()} em __API_URL.
+A API baixa o arquivo do SFTP do ambiente (prod ou dev) e devolve {ok, texto, metodo} ou {ok:false, erro}.
 @type function
 @param cArquivo, character, ACB_OBJETO (so o nome, sem pasta)
 @return array, {lOk, cTexto, cMetodo, cErro, lDefinitivo}. lDefinitivo indica erro que
@@ -718,7 +720,8 @@ Static Function fExtraiTexto(cArquivo)
 
 	fSplitUrl(__API_URL, @cHost, @cPath)
 
-	oBody["arquivo"] := EncodeUTF8(cArquivo)
+	oBody["arquivo"]  := EncodeUTF8(cArquivo)
+	oBody["ambiente"] := AllTrim(GetEnvServer())
 
 	aAdd(aHeader, "Content-Type: application/json")
 	aAdd(aHeader, "Authorization: Bearer " + AllTrim(__API_TOKEN))

@@ -21,14 +21,20 @@ Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 | Variável | Obrigatória | Exemplo / padrão | Para que serve |
 |----------|-------------|------------------|----------------|
 | `API_TOKEN` | **Sim** | valor longo e aleatório | Token que o job envia no header `Authorization: Bearer ...`. Tem que ser **igual** ao parâmetro `Z_MEDAPIT` do Protheus |
-| `SFTP_HOST` | **Sim** | `oestesaude175831.protheus.cloudtotvs.com.br` | Servidor SFTP dos anexos (sem `sftp://`) |
-| `SFTP_PORT` | **Sim** | `1151` | Porta do SFTP (Cloud TOTVS) |
-| `SFTP_USER` | **Sim** | `ftp_CYWSXT_dev` | Usuário do SFTP |
-| `SFTP_PASSWORD` | **Sim** | — | Senha do SFTP |
+| `SFTP_AMBIENTE_PROD` | Não | `CYWSXT_PROD` | Ambiente do Protheus (campo `ambiente` que o job envia com `GetEnvServer()`) que usa o SFTP de produção; os demais usam o de dev |
+| `SFTP_PROD_HOST` | Na API de produção | `oestesaude169995.protheus.cloudtotvs.com.br` | Servidor SFTP de produção (sem `sftp://`) |
+| `SFTP_PROD_PORT` | Na API de produção | `2323` | Porta do SFTP de produção |
+| `SFTP_PROD_USER` | Na API de produção | `ftp_CYWSXT_prod` | Usuário do SFTP de produção |
+| `SFTP_PROD_PASSWORD` | Na API de produção | — | Senha do SFTP de produção |
+| `SFTP_DEV_HOST` | Na API de dev | `oestesaude175831.protheus.cloudtotvs.com.br` | Servidor SFTP de dev (sem `sftp://`) |
+| `SFTP_DEV_PORT` | Na API de dev | `1151` | Porta do SFTP de dev |
+| `SFTP_DEV_USER` | Na API de dev | `ftp_CYWSXT_dev` | Usuário do SFTP de dev |
+| `SFTP_DEV_PASSWORD` | Na API de dev | — | Senha do SFTP de dev. Deixe `SFTP_DEV_*` vazio no servidor de produção |
 | `SFTP_DIR` | **Sim** | `/dirdoc/co01/shared/` | Pasta onde estão os arquivos do `ACB_OBJETO` |
 | `PORT` | Não | `3010` | Porta HTTP da API |
 | `OCR_TMP_DIR` | Não | `./ocr-tmp` | Pasta temporária dos arquivos durante a extração (apagados ao final) |
 | `PDF_MIN_TEXT_CHARS` | Não | `40` | Abaixo dessa quantidade de caracteres, o PDF é tratado como escaneado e vai para OCR |
+| `PDF_MAX_PAGINAS` | Não | `30` | Máximo de páginas de PDF escaneado passadas pelo OCR (o resto é ignorado, com aviso no log), para caber no `__API_TIMEOUT` do job |
 | `BODY_LIMIT` | Não | `25mb` | Tamanho máximo do JSON recebido (só afeta o `/extrair` com Base64) |
 
 Para gerar um token novo (PowerShell):
@@ -42,11 +48,17 @@ Depois de alterar o `.env`, reinicie a API para ela ler os valores novos.
 ### Rodando no Docker (`infra/docker-compose.yml`)
 
 - O compose lê o `.env` da API (`env_file`), então token e SFTP valem também para o container.
-- `PORT`, `OCR_TMP_DIR`, `PDF_MIN_TEXT_CHARS` e `BODY_LIMIT` estão fixos no compose e **têm precedência** sobre o `.env`.
+- `PORT`, `OCR_TMP_DIR`, `PDF_MIN_TEXT_CHARS`, `PDF_MAX_PAGINAS` e `BODY_LIMIT` estão fixos no compose e **têm precedência** sobre o `.env`.
 - Porta exposta no computador: `API_HOST_PORT` (padrão `3010`). Em produção use `API_HOST_PORT=6177`, a porta que o Protheus `CYWSXT_PROD` chama.
 
+- O `.env` é obrigatório: sem ele o compose não sobe.
+- `infra/docker-compose.dev.yml` (override de dev) monta `api-extracao-texto/test` no container para os testes da fase 4.
+
 ```powershell
-docker compose -f infra/docker-compose.yml up -d --build
+# produção
+$env:API_HOST_PORT = 6177; docker compose -f infra/docker-compose.yml up -d --build
+# dev/testes
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 ```
 
 ### Rodando com pm2 (`infra/ecosystem.config.cjs`)
@@ -83,7 +95,7 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 | `__CODDEP` | `012` | Departamento filtrado na B71 (`B71_CODDEP`) |
 | `__CODOBJ` | `""` (vazio) | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio |
 | `__DATA_DBG` | `""` (vazio) | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio |
-| `__API_TIMEOUT` | `120` | Tempo máximo (segundos) de espera pela API por anexo |
+| `__API_TIMEOUT` | `300` | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS` |
 
 ### 2.3 Scheduler
 
@@ -121,7 +133,7 @@ O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **
 |--------|---------|-------|----------|
 | AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14` | `6177` (TCP) | O job chama `POST /extrair-sftp` |
 | AppServer dos demais ambientes | a própria máquina (`localhost`) | `3010` (TCP) | O job chama `POST /extrair-sftp` |
-| Máquina da API | `SFTP_HOST` | `1151` (TCP) | A API baixa os anexos |
+| Máquina da API | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos |
 
 - Fora do `CYWSXT_PROD` o job usa `localhost:3010`, então a API precisa estar na **mesma máquina** do AppServer desse ambiente.
 - Em produção a API roda em `10.1.5.14` na porta `6177` (pm2 com `--env production`, ou Docker com `API_HOST_PORT=6177`).
@@ -131,7 +143,7 @@ O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **
 
 ## 4. Checklist rápido
 
-- [ ] `api-extracao-texto/.env` criado com `API_TOKEN` e todas as `SFTP_*`
+- [ ] `api-extracao-texto/.env` criado com `API_TOKEN`, `SFTP_DIR` e as `SFTP_PROD_*` (produção) ou `SFTP_DEV_*` (dev)
 - [ ] API no ar (Docker ou pm2) e respondendo em `http://localhost:3010` (dev) ou `http://10.1.5.14:6177` (produção)
 - [ ] Teste da API: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (todos os testes OK)
 - [ ] SX6 `Z_NOTIENCA` cadastrado

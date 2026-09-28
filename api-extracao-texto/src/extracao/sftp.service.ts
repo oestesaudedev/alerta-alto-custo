@@ -9,14 +9,23 @@ export class SftpService {
 
   constructor(private readonly config: ConfigService) {}
 
-  async baixar(arquivo: string): Promise<Buffer> {
-    const host = this.config.get<string>('SFTP_HOST');
-    const username = this.config.get<string>('SFTP_USER');
-    const password = this.config.get<string>('SFTP_PASSWORD');
+  // Ambiente do Protheus igual a SFTP_AMBIENTE_PROD -> SFTP_PROD_*; qualquer outro -> SFTP_DEV_*
+  perfil(ambiente: string): 'PROD' | 'DEV' {
+    const ambProd = this.config.get<string>('SFTP_AMBIENTE_PROD', 'CYWSXT_PROD').trim().toUpperCase();
+    return ambiente.trim().toUpperCase() === ambProd ? 'PROD' : 'DEV';
+  }
+
+  async baixar(arquivo: string, ambiente: string): Promise<Buffer> {
+    const perfil = this.perfil(ambiente);
+    const host = this.config.get<string>(`SFTP_${perfil}_HOST`);
+    const username = this.config.get<string>(`SFTP_${perfil}_USER`);
+    const password = this.config.get<string>(`SFTP_${perfil}_PASSWORD`);
     if (!host || !username || !password) {
-      throw new Error('SFTP não configurado (SFTP_HOST, SFTP_USER e SFTP_PASSWORD no .env)');
+      throw new Error(
+        `SFTP ${perfil} não configurado (SFTP_${perfil}_HOST, SFTP_${perfil}_USER e SFTP_${perfil}_PASSWORD no .env)`,
+      );
     }
-    const port = Number(this.config.get('SFTP_PORT', '22'));
+    const port = Number(this.config.get(`SFTP_${perfil}_PORT`, '22'));
     const remoto = path.posix.join(this.config.get<string>('SFTP_DIR', '/'), arquivo);
 
     const sftp = new SftpClient();
@@ -25,10 +34,11 @@ export class SftpService {
       await sftp.connect({ host, port, username, password, readyTimeout: 20_000 });
       const tipo = await sftp.exists(remoto);
       if (tipo !== '-' && tipo !== 'l') {
-        throw new Error(`arquivo não encontrado no SFTP: ${remoto}`);
+        // "encontrado no SFTP" é o que o job Protheus usa para tratar o erro como definitivo
+        throw new Error(`arquivo não encontrado no SFTP ${perfil}: ${remoto}`);
       }
       const conteudo = (await sftp.get(remoto)) as Buffer;
-      this.logger.log(`Baixado ${remoto} (${conteudo.length} bytes, ${Date.now() - inicio} ms)`);
+      this.logger.log(`Baixado ${remoto} de ${perfil} (${conteudo.length} bytes, ${Date.now() - inicio} ms)`);
       return conteudo;
     } finally {
       await sftp.end().catch(() => undefined);

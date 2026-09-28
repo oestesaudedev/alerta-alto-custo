@@ -4,7 +4,7 @@ Usada pelo job Protheus `OSMEDALTC` via `POST /extrair`.
 
 ## Requisitos
 
-- Node 18+
+- Node 18+ (a imagem Docker usa Node 22 LTS)
 - `poppler-utils` (`pdftoppm`) — PDF escaneado
 - `tesseract-ocr` + `tesseract-ocr-por`
 - Ou a imagem Docker de [`infra/`](../infra/README.md)
@@ -28,11 +28,13 @@ Variáveis (`.env`):
 | `API_TOKEN` | `dev-change-me` | Header `Authorization` (Bearer ou valor puro) |
 | `OCR_TMP_DIR` | `./ocr-tmp` | Pasta temporária |
 | `PDF_MIN_TEXT_CHARS` | `40` | Abaixo disso, PDF vai para OCR |
+| `PDF_MAX_PAGINAS` | `30` | Máximo de páginas de PDF escaneado passadas pelo OCR; o resto é ignorado (com aviso no log) para a resposta caber no timeout do job |
 | `BODY_LIMIT` | `25mb` | Tamanho máximo do JSON (o Base64 ocupa ~1,37x o arquivo) |
-| `SFTP_HOST` | — | Host do SFTP dos anexos (`/extrair-sftp`) |
-| `SFTP_PORT` | `22` | Porta do SFTP (Cloud TOTVS: `1151`) |
-| `SFTP_USER` | — | Usuário do SFTP |
-| `SFTP_PASSWORD` | — | Senha do SFTP. **Só no `.env`** (fora do git) |
+| `SFTP_AMBIENTE_PROD` | `CYWSXT_PROD` | Valor do campo `ambiente` do `/extrair-sftp` que usa o SFTP de produção; qualquer outro usa o de dev |
+| `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | — | Host do SFTP dos anexos (prod: `oestesaude169995...`, dev: `oestesaude175831...`) |
+| `SFTP_PROD_PORT` / `SFTP_DEV_PORT` | `22` | Porta do SFTP (prod: `2323`, dev: `1151`) |
+| `SFTP_PROD_USER` / `SFTP_DEV_USER` | — | Usuário do SFTP (`ftp_CYWSXT_prod` / `ftp_CYWSXT_dev`) |
+| `SFTP_PROD_PASSWORD` / `SFTP_DEV_PASSWORD` | — | Senha do SFTP. **Só no `.env`** (fora do git) |
 | `SFTP_DIR` | `/` | Pasta dos anexos (`/dirdoc/co01/shared/`) |
 
 No Docker, o `infra/docker-compose.yml` lê este `.env` (`env_file`), então token e SFTP valem também para o container.
@@ -71,15 +73,17 @@ Comportamento:
 
 ### `POST /extrair-sftp` (usado pelo job Protheus)
 
-Mesmos headers e mesma resposta do `/extrair`. Em vez do conteúdo, recebe só o nome do arquivo (`ACB_OBJETO`):
+Mesmos headers e mesma resposta do `/extrair`. Em vez do conteúdo, recebe o nome do arquivo (`ACB_OBJETO`) e o ambiente do Protheus (`GetEnvServer()`), os dois obrigatórios:
 
 ```json
-{ "arquivo": "guia.pdf" }
+{ "arquivo": "guia.pdf", "ambiente": "CYWSXT_PROD" }
 ```
 
-A API baixa `SFTP_DIR/arquivo` do SFTP e aplica a mesma extração.
+A API baixa `SFTP_DIR/arquivo` do SFTP do ambiente (`PROD` quando `ambiente` = `SFTP_AMBIENTE_PROD`, senão `DEV`) e aplica a mesma extração.
 
-- Arquivo inexistente: `{ "ok": false, "erro": "arquivo não encontrado no SFTP: /dirdoc/co01/shared/guia.pdf" }`
+- Sem `ambiente`: HTTP 400. O job trata como falha temporária e não descarta o anexo
+- Arquivo inexistente: `{ "ok": false, "erro": "arquivo não encontrado no SFTP PROD: /dirdoc/co01/shared/guia.pdf" }`. O job trata como definitivo (procura "encontrado no SFTP")
+- Perfil sem credencial no `.env` (ex.: `SFTP_DEV_*` vazio na produção): `{ ok: false, erro: "SFTP DEV não configurado ..." }`, falha temporária no job
 - Nome com `/` ou `\`: `{ "ok": false, "erro": "nome de arquivo inválido" }`
 - Extensão não suportada é recusada antes do download
 - Falha de conexão/autenticação no SFTP também volta como `{ ok: false, erro }`
@@ -122,9 +126,16 @@ docker exec -e SFTP_ARQUIVO="nome-do-arquivo.pdf" api-extracao-texto node test/e
 ## Docker
 
 ```bash
-docker compose -f ../infra/docker-compose.yml up -d --build
-# sobe em http://localhost:3010; outra porta no host: API_HOST_PORT=<porta>
+cp .env.example .env    # obrigatório; defina API_TOKEN e SFTP_*
+# produção (sem test/ no container)
+API_HOST_PORT=6177 docker compose -f ../infra/docker-compose.yml up -d --build
+# dev/testes (monta test/ em /app/test)
+docker compose -f ../infra/docker-compose.yml -f ../infra/docker-compose.dev.yml up -d --build
 ```
+
+- Sobe em `http://localhost:${API_HOST_PORT:-3010}`.
+- `GET /health` (sem token) → `{ "ok": true }`, usado pelo `HEALTHCHECK` da imagem.
+- O container roda como usuário `node`, e o token nunca fica gravado na imagem.
 
 ## pm2
 

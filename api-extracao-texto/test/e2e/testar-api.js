@@ -1,7 +1,8 @@
 // Fase 4: chama POST /extrair com as 3 amostras e valida as respostas.
 // Uso: node test/e2e/testar-api.js
 // Env: API_URL (padrão http://localhost:3010/extrair), API_TOKEN, AMOSTRAS_DIR,
-//      SFTP_ARQUIVO (nome de um arquivo existente no SFTP para testar /extrair-sftp)
+//      SFTP_ARQUIVO (nome de um arquivo existente no SFTP para testar /extrair-sftp),
+//      SFTP_AMBIENTE_TESTE (ambiente Protheus enviado ao /extrair-sftp; padrão CYWSXT_DEV)
 // Arquivos extras em amostras/reais/ são enviados e só têm o texto exibido.
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +12,8 @@ const API_SFTP_URL = API_URL.replace(/\/extrair$/, '/extrair-sftp');
 const API_TOKEN = process.env.API_TOKEN || 'dev-change-me';
 const AMOSTRAS_DIR = process.env.AMOSTRAS_DIR || path.join(__dirname, 'amostras');
 const SFTP_ARQUIVO = process.env.SFTP_ARQUIVO || '';
+// Ambiente do Protheus simulado nas chamadas /extrair-sftp (CYWSXT_PROD usa o SFTP de produção)
+const SFTP_AMBIENTE = process.env.SFTP_AMBIENTE_TESTE || 'CYWSXT_DEV';
 
 const ESPERADO = ['INFLIXIMABE', 'REMICADE'];
 
@@ -90,17 +93,28 @@ async function main() {
     extensao.json && extensao.json.erro,
   );
 
-  const sftpSemToken = await post({ arquivo: 'a.pdf' }, null, API_SFTP_URL);
+  const sftpSemToken = await post({ arquivo: 'a.pdf', ambiente: SFTP_AMBIENTE }, null, API_SFTP_URL);
   resultado('sftp: sem token → 401', sftpSemToken.status === 401, `HTTP ${sftpSemToken.status}`);
 
-  const sftpSemArquivo = await post({}, API_TOKEN, API_SFTP_URL);
+  const sftpSemArquivo = await post({ ambiente: SFTP_AMBIENTE }, API_TOKEN, API_SFTP_URL);
   resultado(
     'sftp: sem arquivo → 400 {ok:false}',
     sftpSemArquivo.status === 400 && sftpSemArquivo.json && sftpSemArquivo.json.ok === false,
     `HTTP ${sftpSemArquivo.status}, ${JSON.stringify(sftpSemArquivo.json)}`,
   );
 
-  const sftpCaminho = await post({ arquivo: '../etc/passwd.pdf' }, API_TOKEN, API_SFTP_URL);
+  const sftpSemAmbiente = await post({ arquivo: 'a.pdf' }, API_TOKEN, API_SFTP_URL);
+  resultado(
+    'sftp: sem ambiente → 400 {ok:false}',
+    sftpSemAmbiente.status === 400 && sftpSemAmbiente.json && sftpSemAmbiente.json.ok === false,
+    `HTTP ${sftpSemAmbiente.status}, ${JSON.stringify(sftpSemAmbiente.json)}`,
+  );
+
+  const sftpCaminho = await post(
+    { arquivo: '../etc/passwd.pdf', ambiente: SFTP_AMBIENTE },
+    API_TOKEN,
+    API_SFTP_URL,
+  );
   resultado(
     'sftp: caminho no nome → {ok:false}',
     sftpCaminho.json && sftpCaminho.json.ok === false,
@@ -108,7 +122,7 @@ async function main() {
   );
 
   const sftpInexistente = await post(
-    { arquivo: `nao-existe-${Date.now()}.pdf` },
+    { arquivo: `nao-existe-${Date.now()}.pdf`, ambiente: SFTP_AMBIENTE },
     API_TOKEN,
     API_SFTP_URL,
   );
@@ -122,7 +136,7 @@ async function main() {
   );
 
   if (SFTP_ARQUIVO) {
-    const real = await post({ arquivo: SFTP_ARQUIVO }, API_TOKEN, API_SFTP_URL);
+    const real = await post({ arquivo: SFTP_ARQUIVO, ambiente: SFTP_AMBIENTE }, API_TOKEN, API_SFTP_URL);
     resultado(
       `sftp: ${SFTP_ARQUIVO} → texto extraído`,
       real.status === 200 && real.json && real.json.ok === true && real.json.texto.length > 0,

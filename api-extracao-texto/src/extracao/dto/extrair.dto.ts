@@ -14,6 +14,12 @@ export class ExtrairSftpDto {
   @IsString()
   @IsNotEmpty()
   arquivo!: string;
+
+  // GetEnvServer() do Protheus: SFTP_AMBIENTE_PROD usa o SFTP de produção, qualquer outro o de dev.
+  // Obrigatório: sem ele o job cairia no SFTP de dev e descartaria os anexos como "não encontrado".
+  @IsString()
+  @IsNotEmpty()
+  ambiente!: string;
 }
 
 export type MetodoExtracao = 'pdf-parse' | 'ocr-pdf' | 'ocr-imagem';

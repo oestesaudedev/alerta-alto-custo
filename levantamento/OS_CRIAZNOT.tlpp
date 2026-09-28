@@ -1,0 +1,72 @@
+#INCLUDE "TOTVS.CH"
+#INCLUDE "PROTHEUS.CH"
+
+/*/{Protheus.doc} OSCRIAZNOT
+Cria/atualiza o parametro SX6 Z_NOTIENCA (watermark R_E_C_N_O_ da B71).
+Uso (etapa 1): U_OSCRIAZNOT() ou U_OSCRIAZNOT("0") / U_OSCRIAZNOT("123456")
+@type function
+@author Levantamento OSMEDALTC
+@since 25/09/2026
+/*/
+User Function OSCRIAZNOT(cValor)
+
+	Local cParam := "Z_NOTIENCA"
+	Local cAtual := ""
+	Local aArea  := GetArea()
+	Local lOk    := .F.
+
+	Default cValor := ""
+
+	If Select("SX2") <= 0
+		RpcSetEnv("01", "01")
+	EndIf
+
+	DbSelectArea("SX6")
+	SX6->(DbSetOrder(1)) // X6_FIL + X6_VAR
+
+	If SX6->(DbSeek(xFilial("SX6") + PadR(cParam, Len(SX6->X6_VAR))))
+		cAtual := AllTrim(SX6->X6_CONTEUD)
+		If !Empty(cValor) .And. AllTrim(cValor) != cAtual
+			RecLock("SX6", .F.)
+			SX6->X6_CONTEUD := PadR(AllTrim(cValor), Len(SX6->X6_CONTEUD))
+			SX6->(MsUnlock())
+			ConOut("[OSCRIAZNOT] Atualizado " + cParam + ": " + cAtual + " -> " + AllTrim(cValor))
+			MsgInfo("Parametro " + cParam + " atualizado." + CRLF +;
+				"De: " + cAtual + CRLF + "Para: " + AllTrim(cValor), "OSCRIAZNOT")
+		Else
+			ConOut("[OSCRIAZNOT] Ja existe " + cParam + " = " + cAtual)
+			MsgInfo("Parametro " + cParam + " ja existe." + CRLF +;
+				"Valor atual: " + cAtual, "OSCRIAZNOT")
+		EndIf
+		lOk := .T.
+	Else
+		If Empty(cValor)
+			cValor := "0"
+		EndIf
+		RecLock("SX6", .T.)
+		SX6->X6_FIL     := xFilial("SX6")
+		SX6->X6_VAR     := cParam
+		SX6->X6_TIPO    := "C"
+		SX6->X6_DESCRIC := "Ult. Recno B71 job alto custo"
+		SX6->X6_DESC1   := "Watermark OSMEDALTC"
+		SX6->X6_DESC2   := "Nao alterar sem necessidade"
+		SX6->X6_CONTEUD := AllTrim(cValor)
+		SX6->X6_PROPRI  := "U"
+		SX6->(MsUnlock())
+		ConOut("[OSCRIAZNOT] Criado " + cParam + " = " + AllTrim(cValor))
+		FwLogMsg("INFO", "OSCRIAZNOT", "OSCRIAZNOT", "", "", "",;
+			"Criado " + cParam + "=" + AllTrim(cValor), 0, 0)
+		MsgInfo("Parametro " + cParam + " criado com valor: " + AllTrim(cValor), "OSCRIAZNOT")
+		lOk := .T.
+	EndIf
+
+	RestArea(aArea)
+
+Return lOk
+
+/*/{Protheus.doc} dbgCRIAZNOT
+Wrapper de debug para U_OSCRIAZNOT.
+@type function
+/*/
+User Function dbgCRIAZNOT()
+Return U_OSCRIAZNOT()

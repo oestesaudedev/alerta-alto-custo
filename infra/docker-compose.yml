@@ -1,0 +1,26 @@
+# API NestJS de extração + OCR (fases 3 e 4)
+# Uso: docker compose -f infra/docker-compose.yml up -d --build
+# Porta do host: API_HOST_PORT (padrão 3010)
+services:
+  api-extracao:
+    build:
+      context: ../api-extracao-texto
+      dockerfile: Dockerfile
+    container_name: api-extracao-texto
+    # API_TOKEN vem do .env da API (fora do git); os valores abaixo têm precedência sobre ele
+    env_file:
+      - ../api-extracao-texto/.env
+    environment:
+      PORT: "3010"
+      OCR_TMP_DIR: /tmp/ocr-extracao
+      PDF_MIN_TEXT_CHARS: "40"
+      BODY_LIMIT: 25mb
+    ports:
+      - "${API_HOST_PORT:-3010}:3010"
+    volumes:
+      - ocr-tmp:/tmp/ocr-extracao
+      - ../api-extracao-texto/test:/app/test
+    restart: unless-stopped
+
+volumes:
+  ocr-tmp:

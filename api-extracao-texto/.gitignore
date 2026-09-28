@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+tmp/
+ocr-tmp/
+test/e2e/amostras/

@@ -49,7 +49,7 @@ Em `OS_MEDALTC.tlpp`:
 
 - Compilar **só** `OS_MEDALTC.tlpp`. `teste-integrado/OS_TSTMEDALTC.tlpp` não vai para produção. `levantamento/OS_CRIAZNOT.tlpp` é opcional (o parâmetro pode ser criado no Configurador).
 - Caminho usual: gerar o patch no TDS a partir do RPO de homologação e aplicar na produção, na janela combinada e com backup do RPO atual.
-- Confirmar no TDS (inspetor de objetos do RPO de produção) que `U_OSMEDALTC`, `U_DBGMEDALTC` e `U_CHKMEDALTC` estão presentes.
+- Confirmar no TDS (inspetor de objetos do RPO de produção) que `U_OSMEDALTC`, `U_DBGMEDALTC`, `U_DATAMEDALTC` e `U_CHKMEDALTC` estão presentes.
 
 ### 2.3 Parâmetros SX6 de produção
 
@@ -137,6 +137,7 @@ Ao reativar, o job retoma do `Z_NOTIENCA`, mas só verifica B71 do dia corrente:
 | Mudar o destinatário | `__MAIL_TO` no fonte + novo patch |
 | Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8 (vale a partir da próxima execução) |
 | Reprocessar uma B71 do dia | `Z_NOTIENCA` = recno − 1, com o agendamento pausado. Reenvia o e-mail dessa B71 e das seguintes |
+| Verificar B71 de outra data (ex.: dia em que o job ficou parado) | Com o agendamento pausado: `Z_NOTIENCA` = primeiro recno da data − 1 (`U_OSCRIAZNOT("<valor>")`) e `U_dataMEDALTC("AAAAMMDD")`. O watermark avança sobre a data; na próxima rodada normal as B71 de hoje acima dele são verificadas (as que já tinham sido reenviam e-mail) |
 
 ## 8. Checklist de go-live
 

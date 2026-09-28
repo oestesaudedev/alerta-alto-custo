@@ -2,7 +2,7 @@
 
 Este guia lista tudo o que precisa ser configurado para a solução funcionar, e onde cada item fica. São três lugares:
 
-1. **`.env` da API** (`api-extracao-texto/.env`): token da API e credenciais do SFTP.
+1. `.env` **da API** (`api-extracao-texto/.env`): token da API e credenciais do SFTP.
 2. **Protheus**: parâmetros SX6, constantes do fonte `OS_MEDALTC.tlpp` e o Scheduler.
 3. **Rede**: portas que precisam estar liberadas entre as máquinas.
 
@@ -18,24 +18,26 @@ Crie o arquivo a partir do modelo:
 Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 ```
 
-| Variável | Obrigatória | Exemplo / padrão | Para que serve |
-|----------|-------------|------------------|----------------|
-| `API_TOKEN` | **Sim** | valor longo e aleatório | Token que o job envia no header `Authorization: Bearer ...`. Tem que ser **igual** ao parâmetro `Z_MEDAPIT` do Protheus |
-| `SFTP_AMBIENTE_PROD` | Não | `CYWSXT_PROD` | Ambiente do Protheus (campo `ambiente` que o job envia com `GetEnvServer()`) que usa o SFTP de produção; os demais usam o de dev |
-| `SFTP_PROD_HOST` | Na API de produção | `oestesaude169995.protheus.cloudtotvs.com.br` | Servidor SFTP de produção (sem `sftp://`) |
-| `SFTP_PROD_PORT` | Na API de produção | `2323` | Porta do SFTP de produção |
-| `SFTP_PROD_USER` | Na API de produção | `ftp_CYWSXT_prod` | Usuário do SFTP de produção |
-| `SFTP_PROD_PASSWORD` | Na API de produção | — | Senha do SFTP de produção |
-| `SFTP_DEV_HOST` | Na API de dev | `oestesaude175831.protheus.cloudtotvs.com.br` | Servidor SFTP de dev (sem `sftp://`) |
-| `SFTP_DEV_PORT` | Na API de dev | `1151` | Porta do SFTP de dev |
-| `SFTP_DEV_USER` | Na API de dev | `ftp_CYWSXT_dev` | Usuário do SFTP de dev |
-| `SFTP_DEV_PASSWORD` | Na API de dev | — | Senha do SFTP de dev. Deixe `SFTP_DEV_*` vazio no servidor de produção |
-| `SFTP_DIR` | **Sim** | `/dirdoc/co01/shared/` | Pasta onde estão os arquivos do `ACB_OBJETO` |
-| `PORT` | Não | `3010` | Porta HTTP da API |
-| `OCR_TMP_DIR` | Não | `./ocr-tmp` | Pasta temporária dos arquivos durante a extração (apagados ao final) |
-| `PDF_MIN_TEXT_CHARS` | Não | `40` | Abaixo dessa quantidade de caracteres, o PDF é tratado como escaneado e vai para OCR |
-| `PDF_MAX_PAGINAS` | Não | `30` | Máximo de páginas de PDF escaneado passadas pelo OCR (o resto é ignorado, com aviso no log), para caber no `__API_TIMEOUT` do job |
-| `BODY_LIMIT` | Não | `25mb` | Tamanho máximo do JSON recebido (só afeta o `/extrair` com Base64) |
+
+| Variável             | Obrigatória        | Exemplo / padrão                              | Para que serve                                                                                                                    |
+| -------------------- | ------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `API_TOKEN`          | **Sim**            | valor longo e aleatório                       | Token que o job envia no header `Authorization: Bearer ...`. Tem que ser **igual** ao parâmetro `Z_MEDAPIT` do Protheus           |
+| `SFTP_AMBIENTE_PROD` | Não                | `CYWSXT_PROD`                                 | Ambiente do Protheus (campo `ambiente` que o job envia com `GetEnvServer()`) que usa o SFTP de produção; os demais usam o de dev  |
+| `SFTP_PROD_HOST`     | Na API de produção | `oestesaude169995.protheus.cloudtotvs.com.br` | Servidor SFTP de produção (sem `sftp://`)                                                                                         |
+| `SFTP_PROD_PORT`     | Na API de produção | `2323`                                        | Porta do SFTP de produção                                                                                                         |
+| `SFTP_PROD_USER`     | Na API de produção | `ftp_CYWSXT_prod`                             | Usuário do SFTP de produção                                                                                                       |
+| `SFTP_PROD_PASSWORD` | Na API de produção | —                                             | Senha do SFTP de produção                                                                                                         |
+| `SFTP_DEV_HOST`      | Na API de dev      | `oestesaude175831.protheus.cloudtotvs.com.br` | Servidor SFTP de dev (sem `sftp://`)                                                                                              |
+| `SFTP_DEV_PORT`      | Na API de dev      | `1151`                                        | Porta do SFTP de dev                                                                                                              |
+| `SFTP_DEV_USER`      | Na API de dev      | `ftp_CYWSXT_dev`                              | Usuário do SFTP de dev                                                                                                            |
+| `SFTP_DEV_PASSWORD`  | Na API de dev      | —                                             | Senha do SFTP de dev. Deixe `SFTP_DEV_*` vazio no servidor de produção                                                            |
+| `SFTP_DIR`           | **Sim**            | `/dirdoc/co01/shared/`                        | Pasta onde estão os arquivos do `ACB_OBJETO`                                                                                      |
+| `PORT`               | Não                | `3010`                                        | Porta HTTP da API                                                                                                                 |
+| `OCR_TMP_DIR`        | Não                | `./ocr-tmp`                                   | Pasta temporária dos arquivos durante a extração (apagados ao final)                                                              |
+| `PDF_MIN_TEXT_CHARS` | Não                | `40`                                          | Abaixo dessa quantidade de caracteres, o PDF é tratado como escaneado e vai para OCR                                              |
+| `PDF_MAX_PAGINAS`    | Não                | `30`                                          | Máximo de páginas de PDF escaneado passadas pelo OCR (o resto é ignorado, com aviso no log), para caber no `__API_TIMEOUT` do job |
+| `BODY_LIMIT`         | Não                | `25mb`                                        | Tamanho máximo do JSON recebido (só afeta o `/extrair` com Base64)                                                                |
+
 
 Para gerar um token novo (PowerShell):
 
@@ -50,7 +52,6 @@ Depois de alterar o `.env`, reinicie a API para ela ler os valores novos.
 - O compose lê o `.env` da API (`env_file`), então token e SFTP valem também para o container.
 - `PORT`, `OCR_TMP_DIR`, `PDF_MIN_TEXT_CHARS`, `PDF_MAX_PAGINAS` e `BODY_LIMIT` estão fixos no compose e **têm precedência** sobre o `.env`.
 - Porta exposta no computador: `API_HOST_PORT` (padrão `3010`). Em produção use `API_HOST_PORT=6177`, a porta que o Protheus `CYWSXT_PROD` chama.
-
 - O `.env` é obrigatório: sem ele o compose não sobe.
 - `infra/docker-compose.dev.yml` (override de dev) monta `api-extracao-texto/test` no container para os testes da fase 4.
 
@@ -61,6 +62,8 @@ $env:API_HOST_PORT = 6177; docker compose -f infra/docker-compose.yml up -d --bu
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 ```
 
+
+
 ### Rodando com pm2 (`infra/ecosystem.config.cjs`)
 
 - A API lê o `.env` da pasta `cwd` (`/opt/api-extracao-texto/.env`).
@@ -69,77 +72,99 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d
 
 ---
 
+
+
 ## 2. Protheus
+
+
 
 ### 2.1 Parâmetros SX6
 
 Cadastro em **SIGACFG → Ambiente → Cadastros → Parâmetros**, com filial em branco (vale para todas).
 
-| Parâmetro | Tipo | Valor | Para que serve |
-|-----------|------|-------|----------------|
-| `Z_NOTIENCA` | C | `0` na primeira vez, ou o recno de partida | Último `R_E_C_N_O_` da **B71** já verificado. O job só processa as B71 acima desse valor e o avança sozinho. Pode ser criado com `U_OSCRIAZNOT()` (`levantamento/OS_CRIAZNOT.tlpp`) |
-| `Z_MEDAPIT` | C | o mesmo valor de `API_TOKEN` do `.env` da API | Token Bearer enviado para a API. Vazio: o job registra erro e não processa |
-Observações:
 
-- **Não altere `Z_NOTIENCA` à mão** com o job rodando. Diminuir o valor faz o job reprocessar B71 e reenviar e-mails; aumentar faz pular registros.
+| Parâmetro    | Tipo | Valor                                         | Para que serve                                                                                                                                                                      |
+| ------------ | ---- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Z_NOTIENCA` | C    | `0` na primeira vez, ou o recno de partida    | Último `R_E_C_N_O_` da **B71** já verificado. O job só processa as B71 acima desse valor e o avança sozinho. Pode ser criado com `U_OSCRIAZNOT()` (`levantamento/OS_CRIAZNOT.tlpp`) |
+| `Z_MEDAPIT`  | C    | o mesmo valor de `API_TOKEN` do `.env` da API | Token Bearer enviado para a API. Vazio: o job registra erro e não processa                                                                                                          |
+| Observações: |      |                                               |                                                                                                                                                                                     |
+
+
+- **Não altere** `Z_NOTIENCA` **à mão** com o job rodando. Diminuir o valor faz o job reprocessar B71 e reenviar e-mails; aumentar faz pular registros.
 - Se trocar o `API_TOKEN` da API, troque o `Z_MEDAPIT` junto. Com valores diferentes a API responde 401 e o job não avança.
+
+
 
 ### 2.2 Constantes no fonte `totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp`
 
 Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 
-| Constante | Valor atual | Para que serve |
-|-----------|-------------|----------------|
-| `__MAIL_TO` | `michel.ramos@oestesaude.com.br` | Destinatário do e-mail de alerta |
-| `__API_URL` | `fApiUrl()` | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6177/extrair-sftp` (`__URL_PROD`); qualquer outro usa `http://localhost:3010/extrair-sftp` (`__URL_DEV`). Mudar exige recompilar |
-| `__CODDEP` | `012` | Departamento filtrado na B71 (`B71_CODDEP`) |
-| `__CODOBJ` | `""` (vazio) | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio |
-| `__DATA_DBG` | `""` (vazio) | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio |
-| `__API_TIMEOUT` | `300` | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS` |
+
+| Constante       | Valor atual                      | Para que serve                                                                                                                                                                                                                                               |
+| --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `__MAIL_TO`     | `michel.ramos@oestesaude.com.br` | Destinatário do e-mail de alerta                                                                                                                                                                                                                             |
+| `__API_URL`     | `fApiUrl()`                      | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6177/extrair-sftp` (`__URL_PROD`); qualquer outro usa `http://localhost:3010/extrair-sftp` (`__URL_DEV`). Mudar exige recompilar |
+| `__CODDEP`      | `012`                            | Departamento filtrado na B71 (`B71_CODDEP`)                                                                                                                                                                                                                  |
+| `__CODOBJ`      | `""` (vazio)                     | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio                                                                                                                                                                     |
+| `__DATA_DBG`    | `""` (vazio)                     | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio                                                                                                                         |
+| `__API_TIMEOUT` | `300`                            | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS`                                                                                                |
+
+
+
 
 ### 2.3 Scheduler
 
 Cadastro em **Configurador → Scheduler (CFGX032)**:
 
-| Campo | Valor |
-|-------|-------|
-| Rotina | `U_OSMEDALTC` |
-| Parâmetros | `{'01','01'}` (empresa, filial) |
-| Recorrência | a cada 15 minutos |
 
-Execuções simultâneas são bloqueadas pelo próprio job (`LockByName`). Para testar manualmente, execute `U_dbgMEDALTC`.
+| Campo       | Valor                           |
+| ----------- | ------------------------------- |
+| Rotina      | `U_OSMEDALTC`                   |
+| Parâmetros  | `{'01','01'}` (empresa, filial) |
+| Recorrência | a cada 15 minutos               |
+
+
+Execuções simultâneas são bloqueadas pelo próprio job (`LockByName`). Para testar manualmente, execute `U_dbgMEDALTC`. Para verificar as B71 de outra data no fluxo normal, `U_dataMEDALTC("AAAAMMDD")` (ou `"DD/MM/AAAA"`): só entram as B71 dessa data acima do `Z_NOTIENCA`.
 
 ### 2.4 E-mail (SMTP)
 
 O job envia pelo SMTP padrão do Protheus, lendo os parâmetros SX6 abaixo (os mesmos usados pelos envios de e-mail que já funcionam). Normalmente já estão preenchidos; confira antes do teste.
 
-| Parâmetro | Tipo | Exemplo | Para que serve |
-|-----------|------|---------|----------------|
-| `MV_RELSERV` | C | `smtp.empresa.com.br:587` | Servidor SMTP. A porta pode vir depois de `:` (sem porta, usa 25) |
-| `MV_RELACNT` | C | `protheus@empresa.com.br` | Conta usada para autenticar |
-| `MV_RELPSW` | C | — | Senha da conta |
-| `MV_RELAUTH` | L | `.T.` | Se o servidor exige autenticação |
-| `MV_RELSSL` | L | `.F.` | Conexão SSL |
-| `MV_RELTLS` | L | `.T.` | Conexão TLS (comum na porta 587) |
-| `MV_RELFROM` | C | `protheus@empresa.com.br` | Remetente. Vazio: usa `MV_RELACNT` |
+
+| Parâmetro    | Tipo | Exemplo                   | Para que serve                                                    |
+| ------------ | ---- | ------------------------- | ----------------------------------------------------------------- |
+| `MV_RELSERV` | C    | `smtp.empresa.com.br:587` | Servidor SMTP. A porta pode vir depois de `:` (sem porta, usa 25) |
+| `MV_RELACNT` | C    | `protheus@empresa.com.br` | Conta usada para autenticar                                       |
+| `MV_RELPSW`  | C    | —                         | Senha da conta                                                    |
+| `MV_RELAUTH` | L    | `.T.`                     | Se o servidor exige autenticação                                  |
+| `MV_RELSSL`  | L    | `.F.`                     | Conexão SSL                                                       |
+| `MV_RELTLS`  | L    | `.T.`                     | Conexão TLS (comum na porta 587)                                  |
+| `MV_RELFROM` | C    | `protheus@empresa.com.br` | Remetente. Vazio: usa `MV_RELACNT`                                |
+
 
 O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum medicamento de alto custo foi encontrado. Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
 
 ---
 
+
+
 ## 3. Rede
 
-| Origem | Destino | Porta | Para quê |
-|--------|---------|-------|----------|
-| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14` | `6177` (TCP) | O job chama `POST /extrair-sftp` |
-| AppServer dos demais ambientes | a própria máquina (`localhost`) | `3010` (TCP) | O job chama `POST /extrair-sftp` |
-| Máquina da API | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos |
+
+| Origem                                | Destino                            | Porta                 | Para quê                         |
+| ------------------------------------- | ---------------------------------- | --------------------- | -------------------------------- |
+| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `POST /extrair-sftp` |
+| AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `POST /extrair-sftp` |
+| Máquina da API                        | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos            |
+
 
 - Fora do `CYWSXT_PROD` o job usa `localhost:3010`, então a API precisa estar na **mesma máquina** do AppServer desse ambiente.
 - Em produção a API roda em `10.1.5.14` na porta `6177` (pm2 com `--env production`, ou Docker com `API_HOST_PORT=6177`).
 - Não exponha a porta da API na internet; libere só na rede interna.
 
 ---
+
+
 
 ## 4. Checklist rápido
 

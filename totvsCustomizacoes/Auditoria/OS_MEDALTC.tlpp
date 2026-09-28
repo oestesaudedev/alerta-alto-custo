@@ -36,7 +36,8 @@
 #DEFINE __I_ANEXOS   5
 #DEFINE __I_STATUS   6
 #DEFINE __I_TEXTOS   7
-#DEFINE __I_TAM      7
+#DEFINE __I_DATMOV   8
+#DEFINE __I_TAM      8
 
 // Posicoes de cada anexo em __I_ANEXOS
 #DEFINE __A_CODOBJ   1
@@ -116,7 +117,8 @@ Agendamento (Scheduler / CFGX032):
   Execucao concorrente bloqueada por LockByName.
 
 Teste: U_chkMEDALTC([cArquivo]) confere configuracao, API/SFTP e SMTP sem gravar nada;
-U_dbgMEDALTC roda o job; U_tstMEDALTC (teste-integrado/OS_TSTMEDALTC.tlpp) roda duas vezes
+U_dbgMEDALTC roda o job; U_dataMEDALTC("AAAAMMDD") roda o job para as B71 de outra data;
+U_tstMEDALTC (teste-integrado/OS_TSTMEDALTC.tlpp) roda duas vezes
 e confere que nao ha reprocessamento.
 
 @type function
@@ -127,9 +129,22 @@ e confere que nao ha reprocessamento.
 	watermark -1 quando a execucao nao chegou a ler o Z_NOTIENCA
 /*/
 User Function OSMEDALTC(aJob)
+Return fExecuta(aJob, Nil)
+
+/*/{Protheus.doc} fExecuta
+Execucao do job: abre o ambiente, trava o lock e roda fProcessa. Compartilhada por U_OSMEDALTC
+(data de hoje) e U_dataMEDALTC (data informada). A data nao vem no aJob porque o Scheduler pode
+mandar outros elementos alem de empresa e filial.
+@type function
+@param aJob, array, {cEmpresa, cFilial}
+@param xData, character, Nil = hoje; senao data informada (AAAAMMDD ou DD/MM/AAAA), validada aqui
+@return array, resumo {nTotalB71, nVerificadas, nEmails, nWaterInicial, nWaterFinal}
+/*/
+Static Function fExecuta(aJob, xData)
 
 	Local cEmp    := "01"
 	Local cFil    := "01"
+	Local cData   := ""
 	Local lAbriu  := .F.
 	Local bErrOld := Nil
 	Local oErro   := Nil
@@ -148,6 +163,17 @@ User Function OSMEDALTC(aJob)
 		lAbriu := .T.
 	EndIf
 
+	If ValType(xData) != "U"
+		cData := fDataParam(xData)
+		If Empty(cData)
+			fLog("ERROR", "Data invalida ou futura: '" + cValToChar(xData) + "'. Use AAAAMMDD ou DD/MM/AAAA.")
+			If lAbriu
+				RpcClearEnv()
+			EndIf
+			Return aRes
+		EndIf
+	EndIf
+
 	If !LockByName(__JOB_NAME, .T., .F.)
 		fLog("WARN", "Ja existe uma execucao em andamento (lock ativo). Encerrando.")
 		If lAbriu
@@ -156,11 +182,12 @@ User Function OSMEDALTC(aJob)
 		Return aRes
 	EndIf
 
-	fLog("INFO", "Inicio da execucao (empresa " + cEmp + ", filial " + cFil + ")")
+	fLog("INFO", "Inicio da execucao (empresa " + cEmp + ", filial " + cFil + ")" +;
+		IIf(Empty(cData), "", " - data informada manualmente: " + DToC(SToD(cData))))
 
 	bErrOld := ErrorBlock({|e| Break(e)})
 	BEGIN SEQUENCE
-		fProcessa(aRes)
+		fProcessa(aRes, cData)
 	RECOVER USING oErro
 		fLog("ERROR", "Execucao interrompida: " + IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
 	END SEQUENCE
@@ -183,6 +210,49 @@ Executa o job manualmente para depuracao.
 /*/
 User Function dbgMEDALTC()
 Return U_OSMEDALTC({'01','01'})
+
+/*/{Protheus.doc} dataMEDALTC
+Executa o job manualmente verificando as B71 de uma data (B71_DATMOV) no lugar de hoje, com o
+fluxo normal: B71 com R_E_C_N_O_ > Z_NOTIENCA, extracao, e-mail e avanco do Z_NOTIENCA.
+B71 dessa data com recno <= Z_NOTIENCA nao sao vistas; para inclui-las, baixar antes o
+Z_NOTIENCA (U_OSCRIAZNOT("<recno - 1>")), com o agendamento pausado.
+Uso: U_dataMEDALTC("20260925") ou U_dataMEDALTC("25/09/2026")
+@type function
+@param cData, character, data da movimentacao: AAAAMMDD ou DD/MM/AAAA
+@return array, resumo como o de U_OSMEDALTC ({0,0,0,-1,-1} se a data for invalida)
+/*/
+User Function dataMEDALTC(cData)
+
+	Default cData := ""
+
+Return fExecuta({'01', '01'}, cData)
+
+/*/{Protheus.doc} fDataParam
+Converte a data informada em U_dataMEDALTC sem depender do SET DATE do ambiente.
+@type function
+@param xData, character|date, AAAAMMDD, DD/MM/AAAA ou tipo Data
+@return character, AAAAMMDD, ou "" se vazia, inexistente (ex.: 31/02) ou futura
+/*/
+Static Function fDataParam(xData)
+
+	Local cData := ""
+
+	Do Case
+	Case ValType(xData) == "D"
+		cData := DToS(xData)
+	Case ValType(xData) == "C" .And. Len(AllTrim(xData)) == 10 .And. SubStr(AllTrim(xData), 3, 1) == "/"
+		cData := AllTrim(xData)
+		cData := Right(cData, 4) + SubStr(cData, 4, 2) + Left(cData, 2)
+	Case ValType(xData) == "C"
+		cData := AllTrim(xData)
+	EndCase
+
+	// SToD nao recusa data inexistente; a volta por DToS precisa dar o mesmo texto
+	If Len(cData) != 8 .Or. !fSoDigitos(cData) .Or. DToS(SToD(cData)) != cData .Or. SToD(cData) > Date()
+		cData := ""
+	EndIf
+
+Return cData
 
 /*/{Protheus.doc} chkMEDALTC
 Diagnostico do teste integrado: confere cada peca sem gravar Z_NOTIENCA e sem enviar e-mail
@@ -314,8 +384,9 @@ Return lPassou
 Processamento principal do job.
 @type function
 @param aRes, array, resumo da execucao (preenchido por referencia; posicoes __P_*)
+@param cData, character, B71_DATMOV (AAAAMMDD) informado manualmente; "" = hoje
 /*/
-Static Function fProcessa(aRes)
+Static Function fProcessa(aRes, cData)
 
 	Local nUltimo  := 0
 	Local nGravado := 0
@@ -323,6 +394,8 @@ Static Function fProcessa(aRes)
 	Local aB71     := {}
 	Local nEmails  := 0
 	Local nI       := 0
+
+	Default cData := ""
 
 	If !fValidaCfg()
 		Return
@@ -344,11 +417,11 @@ Static Function fProcessa(aRes)
 
 	fLog("INFO", "Watermark " + __PAR_WATER + " = " + cValToChar(nUltimo) +;
 		"; buscando B71 com R_E_C_N_O_ > " + cValToChar(nUltimo) +;
-		", CODDEP = " + __CODDEP + ", DATMOV = " + fDataMov())
+		", CODDEP = " + __CODDEP + ", DATMOV = " + fDataMov(cData))
 
-	fAvisaAtrasadas(nUltimo)
+	fAvisaAtrasadas(nUltimo, cData)
 
-	aB71 := fConsulta(nUltimo)
+	aB71 := fConsulta(nUltimo, cData)
 	aRes[__P_TOTAL] := Len(aB71)
 	If Len(aB71) == 0
 		fLog("INFO", "Nenhuma B71 nova.")
@@ -603,7 +676,7 @@ Static Function fCorpoEmail(aItem, aAchados)
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
 	cHtml += "<tr><td><b>Guia</b></td><td>" + fHtml(aItem[__I_NUMGUI]) + "</td></tr>"
 	cHtml += "<tr><td><b>Origem</b></td><td>" + fHtml(aItem[__I_ALIMOV]) + " (recno " + fHtml(aItem[__I_RECMOV]) + ")</td></tr>"
-	cHtml += "<tr><td><b>Movimenta&ccedil;&atilde;o B71</b></td><td>" + cValToChar(aItem[__I_RECNO]) + " - " + DToC(Date()) + "</td></tr>"
+	cHtml += "<tr><td><b>Movimenta&ccedil;&atilde;o B71</b></td><td>" + cValToChar(aItem[__I_RECNO]) + " - " + DToC(SToD(aItem[__I_DATMOV])) + "</td></tr>"
 	cHtml += "</table>"
 
 	cHtml += "<p><b>Medicamentos encontrados:</b></p>"
@@ -1076,25 +1149,28 @@ Static Function fNormaliza(cTexto)
 Return Upper(FwNoAccent(AllTrim(cTexto)))
 
 /*/{Protheus.doc} fConsulta
-Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = hoje, CODDEP = __CODDEP) e, para cada uma,
+Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = fDataMov(cData), CODDEP = __CODDEP) e, para cada uma,
 resolve a guia na tabela origem e os anexos B53 -> AC9 -> ACB.
 Todas as B71 da janela voltam, inclusive sem anexo ou com alias desconhecido, para que o
 watermark possa avancar sobre elas.
 @type function
 @param nUltimo, numeric, valor atual de Z_NOTIENCA
-@return array, itens {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus} em ordem de R_E_C_N_O_
+@param cData, character, opcional; B71_DATMOV informado manualmente (AAAAMMDD); "" = hoje
+@return array, itens {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov} em ordem de R_E_C_N_O_
 /*/
-Static Function fConsulta(nUltimo)
+Static Function fConsulta(nUltimo, cData)
 
 	Local aB71   := {}
 	Local cQuery := ""
 	Local cAlias := ""
 
-	cQuery := "SELECT B71.R_E_C_N_O_ AS B71REC, B71.B71_ALIMOV, B71.B71_RECMOV" +;
+	Default cData := ""
+
+	cQuery := "SELECT B71.R_E_C_N_O_ AS B71REC, B71.B71_ALIMOV, B71.B71_RECMOV, B71.B71_DATMOV" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
 		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
-		" AND B71.B71_DATMOV = '" + fDataMov() + "'" +;
+		" AND B71.B71_DATMOV = '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '" +;
 		" ORDER BY B71.R_E_C_N_O_"
@@ -1102,7 +1178,8 @@ Static Function fConsulta(nUltimo)
 	cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
 
 	While !(cAlias)->(Eof())
-		aAdd(aB71, fMontaB71((cAlias)->B71REC, AllTrim((cAlias)->B71_ALIMOV), AllTrim((cAlias)->B71_RECMOV)))
+		aAdd(aB71, fMontaB71((cAlias)->B71REC, AllTrim((cAlias)->B71_ALIMOV), AllTrim((cAlias)->B71_RECMOV),;
+			IIf(ValType((cAlias)->B71_DATMOV) == "D", DToS((cAlias)->B71_DATMOV), AllTrim((cAlias)->B71_DATMOV))))
 		(cAlias)->(DbSkip())
 	EndDo
 
@@ -1116,17 +1193,20 @@ essas B71 (job parado ou com falha na virada do dia) ficam para tras assim que o
 avancar sobre a primeira B71 do dia. Nao altera o processamento.
 @type function
 @param nUltimo, numeric, valor atual de Z_NOTIENCA
+@param cData, character, opcional; B71_DATMOV informado manualmente (AAAAMMDD); "" = hoje
 /*/
-Static Function fAvisaAtrasadas(nUltimo)
+Static Function fAvisaAtrasadas(nUltimo, cData)
 
 	Local cQuery := ""
 	Local cAlias := ""
+
+	Default cData := ""
 
 	cQuery := "SELECT COUNT(*) AS QTD, MIN(B71.R_E_C_N_O_) AS PRIREC, MIN(B71.B71_DATMOV) AS PRIDAT" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
 		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
-		" AND B71.B71_DATMOV < '" + fDataMov() + "'" +;
+		" AND B71.B71_DATMOV < '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '"
 
@@ -1145,9 +1225,9 @@ Return
 /*/{Protheus.doc} fMontaB71
 Resolve guia e anexos de uma B71.
 @type function
-@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus}
+@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov}
 /*/
-Static Function fMontaB71(nRecno, cAliMov, cRecMov)
+Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 
 	Local aItem   := Array(__I_TAM)
 	Local cCampo  := fCampoGuia(cAliMov)
@@ -1161,6 +1241,7 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov)
 	aItem[__I_NUMGUI] := ""
 	aItem[__I_ANEXOS] := {}
 	aItem[__I_TEXTOS] := {}
+	aItem[__I_DATMOV] := cDatMov
 
 	If Empty(cCampo)
 		aItem[__I_STATUS] := __ST_ALIAS
@@ -1359,9 +1440,18 @@ Return IIf(Upper(AllTrim(GetEnvServer())) == __ENV_PROD, __URL_PROD, __URL_DEV) 
 
 /*/{Protheus.doc} fDataMov
 @type function
-@return character, B71_DATMOV consultado (AAAAMMDD): __DATA_DBG se preenchido, senao hoje
+@param cData, character, opcional; data informada em U_dataMEDALTC (AAAAMMDD)
+@return character, B71_DATMOV consultado (AAAAMMDD): cData se informado, senao __DATA_DBG se
+	preenchido, senao hoje
 /*/
-Static Function fDataMov()
+Static Function fDataMov(cData)
+
+	Default cData := ""
+
+	If !Empty(cData)
+		Return cData
+	EndIf
+
 Return IIf(Empty(__DATA_DBG), DToS(Date()), __DATA_DBG)
 
 /*/{Protheus.doc} fSoDigitos

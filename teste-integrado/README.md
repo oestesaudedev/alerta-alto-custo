@@ -21,7 +21,7 @@ Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → anexos
 
 No RPO de **teste**, compilar `OS_MEDALTC.tlpp`, `OS_TSTMEDALTC.tlpp` e, se o parâmetro ainda não existir, `OS_CRIAZNOT.tlpp`.
 
-Para chamar as funções: no VS Code (TDS), "TOTVS Language Debug" e informar o programa (`U_chkMEDALTC`, `U_tstMEDALTC`...), ou colocar a função como programa inicial do SmartClient. Todas abrem o ambiente `01/01` sozinhas se não houver um aberto. O resultado sai no console do AppServer (`ConOut`) e no log do framework.
+Para chamar as funções: no VS Code (TDS), "TOTVS Language Debug" e informar o programa (`U_chkMEDALTC`, `U_tstMEDALTC`...), ou colocar a função como programa inicial do SmartClient. Todas abrem o ambiente `01/01` sozinhas se não houver um aberto. O resultado sai no console do AppServer (`ConOut`) e no log do framework; as mensagens do `OS_MEDALTC.tlpp` (`U_chkMEDALTC`, job) também vão para `\logpls\alto_custo_AAAAMMDD.log` no RootPath.
 
 ## 3. Diagnóstico — `U_chkMEDALTC()`
 

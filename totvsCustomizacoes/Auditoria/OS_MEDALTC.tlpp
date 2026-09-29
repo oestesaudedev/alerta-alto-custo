@@ -1,7 +1,13 @@
 #INCLUDE "TOTVS.CH"
 #INCLUDE "PROTHEUS.CH"
+#INCLUDE "FILEIO.CH"
 
 #DEFINE __JOB_NAME   "OSMEDALTC"
+
+// Log em arquivo, um por dia: __LOG_DIR + __LOG_ARQ + "_AAAAMMDD.log" (relativo ao RootPath).
+// Gravado pelo PlsPtuLog (padrao PLS, grava em \logpls\); __LOG_DIR so vale no fallback fLogArq
+#DEFINE __LOG_DIR    "\logpls\"
+#DEFINE __LOG_ARQ    "alto_custo"
 
 #DEFINE __MAIL_TO    "michel.ramos@oestesaude.com.br"
 
@@ -115,6 +121,9 @@ Agendamento (Scheduler / CFGX032):
   Parametros: {'01','01'} (empresa, filial)
   Recorrencia: a cada 15 minutos
   Execucao concorrente bloqueada por LockByName.
+
+Log: \logpls\alto_custo_AAAAMMDD.log no RootPath (um arquivo por dia, gravado pelo PlsPtuLog),
+alem do console do AppServer.
 
 Teste: U_chkMEDALTC([cArquivo]) confere configuracao, API/SFTP e SMTP sem gravar nada;
 U_dbgMEDALTC roda o job; U_dataMEDALTC("AAAAMMDD") roda o job para as B71 de outra data;
@@ -1475,14 +1484,58 @@ Static Function fSoDigitos(cTexto)
 Return .T.
 
 /*/{Protheus.doc} fLog
-Registra a mensagem no console do AppServer e no log do framework.
+Registra a mensagem no console do AppServer, no log do framework e no arquivo do dia
+(PlsPtuLog, ou fLogArq se a funcao nao estiver no RPO).
 @type function
 @param cNivel, character, INFO | WARN | ERROR
 @param cMsg, character, mensagem
 /*/
 Static Function fLog(cNivel, cMsg)
 
-	ConOut("[" + __JOB_NAME + "][" + cNivel + "][" + DToC(Date()) + " " + Time() + "] " + cMsg)
+	Local cLinha := "[" + __JOB_NAME + "][" + cNivel + "][" + DToC(Date()) + " " + Time() + "] " + cMsg
+
+	ConOut(cLinha)
 	FwLogMsg(cNivel, __JOB_NAME, __JOB_NAME, "", "", "", cMsg, 0, 0)
+	If FindFunction("PlsPtuLog")
+		PlsPtuLog(cLinha, __LOG_ARQ + "_" + DToS(Date()) + ".log")
+	Else
+		fLogArq(cLinha)
+	EndIf
+
+Return
+
+/*/{Protheus.doc} fLogArq
+Fallback do PlsPtuLog: so e usado quando a funcao nao existe no RPO.
+Acrescenta a linha em __LOG_DIR + __LOG_ARQ + "_AAAAMMDD.log". Abre e fecha a cada linha, para nada
+ficar em buffer se a thread cair e para o arquivo poder ser lido com o job rodando.
+Falha de gravacao so vai para o console: nunca interrompe o job e nao chama fLog (recursao).
+@type function
+@param cLinha, character, linha ja formatada por fLog
+/*/
+Static Function fLogArq(cLinha)
+
+	Local cArq := __LOG_DIR + __LOG_ARQ + "_" + DToS(Date()) + ".log"
+	Local nHdl := -1
+
+	If !ExistDir(__LOG_DIR)
+		MakeDir(__LOG_DIR)
+	EndIf
+
+	If File(cArq)
+		nHdl := FOpen(cArq, FO_READWRITE + FO_SHARED)
+		If nHdl >= 0
+			FSeek(nHdl, 0, FS_END)
+		EndIf
+	Else
+		nHdl := FCreate(cArq)
+	EndIf
+
+	If nHdl < 0
+		ConOut("[" + __JOB_NAME + "][WARN] nao foi possivel gravar " + cArq + " (FError " + cValToChar(FError()) + ")")
+		Return
+	EndIf
+
+	FWrite(nHdl, cLinha + CRLF)
+	FClose(nHdl)
 
 Return

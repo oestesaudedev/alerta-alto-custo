@@ -34,6 +34,7 @@ Regras importantes:
 - **PDF escaneado longo.** A API passa pelo OCR só as primeiras `PDF_MAX_PAGINAS` páginas (padrão 30), para responder dentro do timeout. Medicamento citado só depois disso não é detectado; o log da API avisa.
 - **Execução única.** `LockByName` impede duas execuções simultâneas.
 - **Dados de saúde.** O e-mail e o log não trazem trechos do texto do anexo, só tamanho, método e tempo.
+- **Log.** Tudo o que o job registra vai para `\logpls\alto_custo_AAAAMMDD.log` no RootPath (um arquivo por dia, criado sozinho, gravado pela função padrão do PLS `PlsPtuLog`, com gravação própria como fallback) e para o console do AppServer. Os arquivos antigos são apagados manualmente.
 
 O e-mail traz guia, origem, recno da B71 e, por medicamento: código, descrição BR8, valor de tabela (BD4, vigência mais recente), valor na guia (soma dos itens da guia de origem), termo encontrado e anexo. Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
 

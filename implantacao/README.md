@@ -84,7 +84,7 @@ Em **SIGACFG → Schedule** (cadastro de agendamentos):
 
 ## 4. Primeiro dia
 
-Acompanhar as primeiras execuções no console do AppServer (ou log do framework, filtro `OSMEDALTC`). A cada 15 minutos deve aparecer:
+Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log` do RootPath (um por dia; também no console do AppServer, filtro `OSMEDALTC`). A cada 15 minutos deve aparecer:
 
 ```
 [OSMEDALTC][INFO] Inicio da execucao (empresa 01, filial 01)

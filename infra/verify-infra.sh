@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Valida a fase 2: Node 18+, poppler, tesseract-por, pm2.
+# Valida a fase 2: Node 20+, poppler, tesseract-por, pm2.
 set -euo pipefail
 
 ok=0
@@ -21,11 +21,11 @@ echo "==> Verificando infra OCR / NestJS"
 
 if command -v node >/dev/null 2>&1; then
   major="$(node -v | sed 's/^v//' | cut -d. -f1)"
-  if [[ "${major}" -ge 18 ]]; then
-    echo "[OK]  node $(node -v) (>= 18)"
+  if [[ "${major}" -ge 20 ]]; then
+    echo "[OK]  node $(node -v) (>= 20)"
     ok=$((ok + 1))
   else
-    echo "[FAIL] node $(node -v) (precisa >= 18)"
+    echo "[FAIL] node $(node -v) (precisa >= 20)"
     fail=$((fail + 1))
   fi
 else

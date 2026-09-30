@@ -1,7 +1,9 @@
 # Fase 4 no Windows: sobe a API no Docker, gera as amostras e roda os testes.
-# Uso (na raiz extracao-dados):  .\api-extracao-texto\test\e2e\rodar-fase4.ps1 [-HostPort 3010]
+# Uso (na raiz extracao-dados):  .\api-extracao-texto\test\e2e\rodar-fase4.ps1 [-HostPort 3010] [-Ia]
+# -Ia: exige que o Claude ache os medicamentos da comercial.pdf (IA_HABILITADA=true e ANTHROPIC_API_KEY no .env)
 param(
-    [int]$HostPort = 3010
+    [int]$HostPort = 3010,
+    [switch]$Ia
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,8 +26,17 @@ for ($i = 0; $i -lt 30; $i++) {
 docker exec -u root api-extracao-texto node test/e2e/gerar-amostras.js
 if ($LASTEXITCODE -ne 0) { throw 'Falha ao gerar amostras' }
 
-docker exec api-extracao-texto node test/e2e/testar-api.js
-$codigo = $LASTEXITCODE
+docker exec api-extracao-texto node test/testar-mascara.js
+$codigoMascara = $LASTEXITCODE
+
+docker exec api-extracao-texto node test/testar-ia.js
+$codigoIa = $LASTEXITCODE
+
+docker exec api-extracao-texto node test/testar-verificacao.js
+$codigoVerificacao = $LASTEXITCODE
+
+docker exec -e "IA_TESTE=$($Ia.IsPresent.ToString().ToLower())" api-extracao-texto node test/e2e/testar-api.js
+$codigo = ($LASTEXITCODE, $codigoMascara, $codigoIa, $codigoVerificacao | Measure-Object -Maximum).Maximum
 
 Write-Host ''
 Write-Host "API continua no ar em http://localhost:$HostPort/extrair"

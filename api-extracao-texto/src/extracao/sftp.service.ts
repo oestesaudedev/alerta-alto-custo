@@ -1,7 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import SftpClient = require('ssh2-sftp-client');
+import { hostKeys } from '../config/validar-env';
+
+// Mesmo formato do `ssh-keygen -lf`: SHA256 da chave pública em Base64, sem "="
+function fingerprint(chave: Buffer): string {
+  return `SHA256:${createHash('sha256').update(chave).digest('base64').replace(/=+$/, '')}`;
+}
 
 @Injectable()
 export class SftpService {
@@ -27,11 +34,32 @@ export class SftpService {
     }
     const port = Number(this.config.get(`SFTP_${perfil}_PORT`, '22'));
     const remoto = path.posix.join(this.config.get<string>('SFTP_DIR', '/'), arquivo);
+    const aceitas = hostKeys(this.config.get<string>(`SFTP_${perfil}_HOSTKEY`));
+    let recebida = '';
 
     const sftp = new SftpClient();
     const inicio = Date.now();
     try {
-      await sftp.connect({ host, port, username, password, readyTimeout: 20_000 });
+      try {
+        await sftp.connect({
+          host,
+          port,
+          username,
+          password,
+          readyTimeout: 20_000,
+          hostVerifier: (chave: Buffer) => {
+            recebida = fingerprint(chave);
+            return aceitas.includes(recebida);
+          },
+        });
+      } catch (err) {
+        if (recebida && !aceitas.includes(recebida)) {
+          throw new Error(
+            `chave do servidor SFTP ${perfil} não confere (${recebida}); confira SFTP_${perfil}_HOSTKEY`,
+          );
+        }
+        throw err;
+      }
       const tipo = await sftp.exists(remoto);
       if (tipo !== '-' && tipo !== 'l') {
         // "encontrado no SFTP" é o que o job Protheus usa para tratar o erro como definitivo

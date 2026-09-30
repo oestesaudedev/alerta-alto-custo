@@ -4,7 +4,7 @@
  * API_TOKEN e SFTP_* vêm do .env em cwd (/opt/api-extracao-texto/.env, lido pelo @nestjs/config).
  * Não definir API_TOKEN aqui: variável do pm2 vence o .env e o Protheus (Z_MEDAPIT) passa a receber 401.
  * Porta: 3010 em desenvolvimento; 6177 em produção, onde o Protheus (ambiente CYWSXT_PROD)
- * chama http://10.1.5.14:6177/extrair-sftp.
+ * chama http://10.1.5.14:6177/verificar-sftp.
  */
 module.exports = {
   apps: [

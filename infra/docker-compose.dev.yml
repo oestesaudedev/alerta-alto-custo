@@ -1,6 +1,9 @@
-# Override de dev/testes: monta os scripts e amostras da fase 4 no container.
+# Override de dev/testes: monta os scripts e amostras da fase 4 no container
+# e habilita o POST /extrair (Base64), usado só pelos testes.
 # Uso: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 services:
   api-extracao:
+    environment:
+      EXTRAIR_BASE64: "true"
     volumes:
       - ../api-extracao-texto/test:/app/test

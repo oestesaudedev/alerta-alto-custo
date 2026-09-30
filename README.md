@@ -6,8 +6,8 @@ O ADVPL/TLPP não lê PDF nem faz OCR, e o `FTPConnect` não fala SFTP. Por isso
 
 | Parte | Onde roda | O que faz |
 |---|---|---|
-| **Job TLPP `U_OSMEDALTC`** ([OS_MEDALTC.tlpp](totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp)) | AppServer Protheus, pelo Scheduler a cada 15 min | Busca as movimentações novas, encontra os anexos, pede o texto à API, compara com os medicamentos de alto custo e envia o e-mail |
-| **API NestJS** ([api-extracao-texto/](api-extracao-texto/)) | Servidor Linux ou Docker na rede interna | Baixa o arquivo do SFTP e devolve o texto (`pdf-parse` para PDF com texto, `pdftoppm` + Tesseract `por` para PDF escaneado e imagens) |
+| **Job TLPP `U_OSMEDALTC`** ([OS_MEDALTC.tlpp](totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp)) | AppServer Protheus, pelo Scheduler a cada 15 min | Busca as movimentações novas, encontra os anexos, manda à API o nome de cada anexo e a lista de medicamentos de alto custo, apura o valor na guia e envia o e-mail |
+| **API NestJS** ([api-extracao-texto/](api-extracao-texto/)) | Servidor Linux ou Docker na rede interna | Baixa o arquivo do SFTP, extrai o texto (`pdf-parse` para PDF com texto, `pdftoppm` + Tesseract `por` para PDF escaneado e imagens) e pede ao Claude (Anthropic) os medicamentos da lista citados no texto |
 
 ## Como funciona
 
@@ -19,24 +19,27 @@ Scheduler (15 min) → U_OSMEDALTC
   4. Para cada B71:
        B71_ALIMOV + B71_RECMOV → tabela origem (BEA | BE4 | B44 | B4Q | B4A) → número da guia
        → B53 (B53_NUMGUI) → AC9 (AC9_CODENT contém a guia) → ACB (ACB_OBJETO = nome do arquivo)
-       → POST /extrair-sftp {arquivo, ambiente} na API → API baixa do SFTP e devolve o texto
-       → procura as descrições BR8/BA8 no texto (palavra inteira, sem acento, ≥ 4 letras)
-       → achou? um e-mail por B71 para __MAIL_TO
+       → POST /verificar-sftp {arquivo, ambiente, medicamentos, mascarar} na API, que:
+           baixa do SFTP e extrai o texto
+           mascara os dados pessoais e pergunta ao Claude quais medicamentos da lista o texto cita
+           devolve os achados de confiança alta ou média (sem o texto); os de confiança baixa, como aviso
+       → valor na guia → achou? um e-mail por B71 para __MAIL_TO
        → grava Z_NOTIENCA = recno da B71
 ```
 
 Regras importantes:
 
 - **Sem reprocessamento.** O `Z_NOTIENCA` avança após cada B71 concluída, com ou sem anexo, medicamento ou e-mail. A próxima execução não repete e-mail.
-- **Falha temporária não avança.** API fora, timeout (300 s por anexo), token errado, SFTP inacessível, SMTP fora ou chamada sem o campo `ambiente` (fonte antigo no RPO, HTTP 400): o job para na B71 e a retoma na próxima execução.
+- **Falha temporária não avança.** API fora, timeout (300 s por anexo), token errado, SFTP inacessível, IA indisponível (Claude fora, chave inválida, `IA_HABILITADA=false`), SMTP fora, requisição recusada pela API (HTTP 400) ou API antiga, sem o `/verificar-sftp` (HTTP 404): o job para na B71 e a retoma na próxima execução.
 - **Falha definitiva é descartada.** Arquivo inexistente no SFTP, extensão não suportada ou nome inválido: o anexo é ignorado e a B71 segue.
 - **Só o dia corrente.** O agendamento não processa B71 de dias anteriores que ficaram pendentes (job parado na virada do dia); o log registra um `WARN` com a quantidade. Para verificá-las, use `U_dataMEDALTC` (ver [Manutenção](#manutenção-do-dia-a-dia)).
 - **PDF escaneado longo.** A API passa pelo OCR só as primeiras `PDF_MAX_PAGINAS` páginas (padrão 30), para responder dentro do timeout. Medicamento citado só depois disso não é detectado; o log da API avisa.
 - **Execução única.** `LockByName` impede duas execuções simultâneas.
 - **Dados de saúde.** O e-mail e o log não trazem trechos do texto do anexo, só tamanho, método e tempo.
+- **A IA (Claude) é a verificação.** O Claude lê o texto de cada anexo e aponta os medicamentos da lista citados pelo nome do cadastro, nome comercial, princípio ativo, abreviação ou com erro de OCR. Confiança alta ou média entra no alerta; baixa só no log. Sem a IA, nenhum anexo é verificado: a API responde "IA indisponivel" e o job tenta de novo na próxima execução. Antes do envio, a API mascara CPF, CNS, carteirinha, telefone, e-mail, data de nascimento, os nomes do beneficiário e do solicitante da guia (enviados pelo job) e o que vier depois de rótulos como "Paciente:". O texto do anexo não volta para o Protheus. Detalhes em [configuracoes.md](configuracoes.md#11-ia-claude-a-verificação-dos-medicamentos).
 - **Log.** Tudo o que o job registra vai para `\logpls\alto_custo_AAAAMMDD.log` no RootPath (um arquivo por dia, criado sozinho, gravado pela função padrão do PLS `PlsPtuLog`, com gravação própria como fallback) e para o console do AppServer. Os arquivos antigos são apagados manualmente.
 
-O e-mail traz guia, origem, recno da B71 e, por medicamento: código, descrição BR8, valor de tabela (BD4, vigência mais recente), valor na guia (soma dos itens da guia de origem), termo encontrado e anexo. Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
+O e-mail traz guia, origem, recno da B71 e, por medicamento: código, descrição BR8, valor de tabela (BD4, vigência mais recente), valor na guia (soma dos itens da guia de origem), termo encontrado, anexo e a observação da IA (confiança e motivo). Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
 
 ## Configuração inicial
 
@@ -52,16 +55,18 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
 
    | Variável | Valor |
    |---|---|
-   | `API_TOKEN` | Token longo e aleatório: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+   | `API_TOKEN` | Token aleatório com 32 ou mais caracteres: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. A API não sobe com token vazio, curto ou `dev-change-me` |
    | `SFTP_AMBIENTE_PROD` | `CYWSXT_PROD`: ambiente do Protheus (campo `ambiente` que o job envia) que usa o SFTP de produção; os demais usam o de dev |
    | `SFTP_PROD_*` (`HOST`, `PORT`, `USER`, `PASSWORD`) | SFTP de produção, usado quando o job roda no `CYWSXT_PROD` (porta `2323`) |
    | `SFTP_DEV_*` (`HOST`, `PORT`, `USER`, `PASSWORD`) | SFTP de dev, usado nos demais ambientes (porta `1151`). **Vazio no servidor de produção** |
+   | `SFTP_PROD_HOSTKEY` / `SFTP_DEV_HOSTKEY` | Impressões digitais do servidor SFTP (`SHA256:...`, separadas por vírgula), já preenchidas no `.env.example`. Obrigatórias quando o `HOST` do perfil está preenchido; a API recusa servidor com chave diferente. Para conferir: `ssh-keyscan -p PORTA HOST \| ssh-keygen -lf -` |
    | `SFTP_DIR` | Pasta dos arquivos do `ACB_OBJETO` (`/dirdoc/co01/shared/`) |
    | `PDF_MAX_PAGINAS` | Opcional, padrão `30`: páginas de PDF escaneado passadas pelo OCR |
+   | `IA_HABILITADA` / `ANTHROPIC_API_KEY` | **Obrigatórios**: `true` e a chave da Anthropic. Sem eles nenhum anexo é verificado. Exigem saída HTTPS para `api.anthropic.com`. Modelo em `IA_MODELO` (padrão `claude-sonnet-5-5`; `claude-haiku-4-5` custa menos) |
 
 3. Subir a API:
-   - **Docker**: produção com `API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build`; dev/testes acrescentando `-f infra/docker-compose.dev.yml` (monta `test/`) → `http://localhost:3010`. Gera a imagem `alerta-alto-custo` e sobe o container `api-extracao-texto`; `docker ps` deve mostrar `healthy` (`GET /health`).
-   - **Linux + pm2** (produção): `sudo bash infra/setup-linux.sh`, `bash infra/verify-infra.sh`, build em `/opt/api-extracao-texto` e `pm2 start infra/ecosystem.config.cjs --env production` (porta `6177`). Não coloque `API_TOKEN` no `ecosystem.config.cjs`: a variável do pm2 venceria o `.env`.
+   - **Docker**: produção com `API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build`; dev/testes acrescentando `-f infra/docker-compose.dev.yml` (monta `test/` e habilita o `POST /extrair`) → `http://localhost:3010`. Sem `API_BIND_IP`, a porta fica só em `127.0.0.1`. Gera a imagem `alerta-alto-custo` e sobe o container `api-extracao-texto`; `docker ps` deve mostrar `healthy` (`GET /health`).
+   - **Linux + pm2** (produção): `sudo APPSERVER_IP=<ip do AppServer> bash infra/setup-linux.sh`, `bash infra/verify-infra.sh`, build em `/opt/api-extracao-texto` e `pm2 start infra/ecosystem.config.cjs --env production` (porta `6177`). Não coloque `API_TOKEN` no `ecosystem.config.cjs`: a variável do pm2 venceria o `.env`.
 4. Testar: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (Windows/Docker) ou `npm run test:amostras && npm run test:e2e` (Linux).
 
 ### 2. Protheus
@@ -94,8 +99,9 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
 | AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14` (API) | `6177` |
 | AppServer dos demais ambientes | `localhost` (API na mesma máquina) | `3010` |
 | Máquina da API | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` |
+| Máquina da API | `api.anthropic.com` | `443` |
 
-Não exponha a porta da API na internet.
+Não exponha a porta da API na internet. Em produção, libere a `6177` só para o IP do AppServer. Com Docker, a regra vai na chain `DOCKER-USER`, porque o Docker ignora o `ufw` ([implantacao/README.md](implantacao/README.md), passo 1.5).
 
 ## Funções do Protheus
 
@@ -104,7 +110,7 @@ Não exponha a porta da API na internet.
 | `U_OSMEDALTC(aJob)` | O job (Scheduler) |
 | `U_dbgMEDALTC()` | Executa o job manualmente em `01/01` |
 | `U_dataMEDALTC("AAAAMMDD")` | Executa o job para as B71 de outra data (aceita também `DD/MM/AAAA`), no fluxo normal: watermark, extração, e-mail |
-| `U_chkMEDALTC([cArquivo])` | Diagnóstico sem gravar. Com um `ACB_OBJETO` real, mostra quais medicamentos o anexo dispararia |
+| `U_chkMEDALTC([cArquivo])` | Diagnóstico sem gravar. Com um `ACB_OBJETO` real, verifica o anexo na API (extração + IA) e mostra quais medicamentos ele dispararia |
 | `U_tstMEDALTC()` | Teste integrado: roda o job duas vezes e confere que não há reprocessamento. **Só no RPO de teste** |
 | `U_OSCRIAZNOT([cValor])` | Cria ou ajusta o `Z_NOTIENCA` |
 
@@ -113,6 +119,7 @@ Não exponha a porta da API na internet.
 | Mudança | Como |
 |---|---|
 | Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8 (precisa ter BA8 correspondente). Vale na próxima execução |
+| Trocar o modelo do Claude | `IA_MODELO` no `.env` + reiniciar a API |
 | Trocar o token | `API_TOKEN` no `.env` + reiniciar a API (pm2: `pm2 restart api-extracao-texto`; Docker: `docker compose -f infra/docker-compose.yml up -d`, pois `docker restart` não relê o `.env`), e `Z_MEDAPIT` no mesmo momento |
 | Mudar destinatário ou URL da API | `__MAIL_TO` / `__URL_PROD` no fonte + recompilar |
 | Reprocessar uma B71 do dia | Pausar o agendamento e gravar `Z_NOTIENCA` = recno − 1. Reenvia o e-mail dela e das seguintes |
@@ -125,7 +132,7 @@ Não altere o `Z_NOTIENCA` com o job rodando: diminuir reenvia e-mails, aumentar
 | Pasta / arquivo | Conteúdo |
 |---|---|
 | [totvsCustomizacoes/Auditoria/](totvsCustomizacoes/Auditoria/) | Fonte do job (`OS_MEDALTC.tlpp`), o único que vai para produção |
-| [api-extracao-texto/](api-extracao-texto/) | API NestJS (`POST /extrair`, `POST /extrair-sftp`, `GET /health`), `Dockerfile` e testes e2e |
+| [api-extracao-texto/](api-extracao-texto/) | API NestJS (`POST /verificar-sftp`, usado pelo job; `POST /extrair-sftp`, do fonte anterior; `GET /health`; `POST /verificar` e `/extrair`, só para testes), `Dockerfile` e testes |
 | [infra/](infra/) | `docker-compose.yml` (produção) e `docker-compose.dev.yml` (dev), provisionamento Linux e pm2 |
 | [levantamento/](levantamento/) | Checklist e SQLs para validar tabelas, joins e campos na base |
 | [teste-integrado/](teste-integrado/) | Roteiro de teste, `OS_TSTMEDALTC.tlpp` e `conferencia.sql` |

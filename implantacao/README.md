@@ -9,28 +9,38 @@ Roteiro para pôr em produção a API de extração e o job `U_OSMEDALTC` no Sch
 | `configuracoes.md` | Referência de todos os parâmetros |
 | `infra/` | Provisionamento do servidor da API (`setup-linux.sh`, `verify-infra.sh`, pm2, Docker) |
 
-**Ordem**: aplique o patch do RPO (seção 2) **antes ou junto** da API nova. A API exige o campo `ambiente`, que só o fonte atual envia; com um fonte antigo no RPO, cada anexo volta HTTP 400 e o job para sem avançar o `Z_NOTIENCA`. Não há perda, mas nenhum alerta sai até o patch.
+**Ordem**: suba a API nova, com a IA ligada (seção 1), **antes** do patch do RPO (seção 2). O fonte atual chama o `POST /verificar-sftp` e depende do Claude para verificar os anexos; com a API antiga, cada anexo volta HTTP 404 e o job para sem avançar o `Z_NOTIENCA` (o `U_chkMEDALTC()` avisa "atualizar a API antes do patch"). A API nova continua atendendo o `/extrair-sftp` do fonte anterior, então pode ir para produção antes do patch sem afetar o job que já roda. Exceção: se estiver no RPO o patch intermediário que chamava o `/verificar-sftp` com os campos `ia` e `retornarTexto`, a API nova o recusa (HTTP 400 "property ia should not exist"); aplique o patch atual logo depois de subir a API.
+
+**Pré-requisito**: a IA é a verificação dos medicamentos, então antes do go-live é preciso a aprovação do envio dos textos à Anthropic e a saída de rede para `api.anthropic.com` (seção 9).
 
 ## 1. API em produção
 
-1. **Servidor**: `10.1.5.14`, Linux na rede interna, com saída para o SFTP de produção (`SFTP_PROD_HOST:SFTP_PROD_PORT`, porta `2323`) e alcançável pelo AppServer na porta **6177**. O job, no ambiente `CYWSXT_PROD`, chama fixo `http://10.1.5.14:6177/extrair-sftp` (define `__URL_PROD` no fonte).
-   - `sudo bash infra/setup-linux.sh` e depois `bash infra/verify-infra.sh` (exit 0).
+1. **Servidor**: `10.1.5.14`, Linux na rede interna, com saída para o SFTP de produção (`SFTP_PROD_HOST:SFTP_PROD_PORT`, porta `2323`) e alcançável pelo AppServer na porta **6177**. O job, no ambiente `CYWSXT_PROD`, chama fixo `http://10.1.5.14:6177/verificar-sftp` (defines `__URL_PROD` e `__API_PATH` no fonte).
+   - `sudo APPSERVER_IP=<ip do AppServer> bash infra/setup-linux.sh` e depois `bash infra/verify-infra.sh` (exit 0). O script instala o Node 22 e, com `APPSERVER_IP`, cria as regras do `ufw` do passo 5.
 2. **Código**: em `api-extracao-texto/`, `npm ci && npm run build` e copiar `package.json`, `package-lock.json`, `node_modules/` e `dist/` para `/opt/api-extracao-texto/`. Outra opção é fazer o build direto no servidor.
 3. **`.env` de produção** em `/opt/api-extracao-texto/.env`, a partir de `.env.example`:
-   - `API_TOKEN`: token **novo**, longo e aleatório, diferente do de desenvolvimento.
-   - `SFTP_AMBIENTE_PROD=CYWSXT_PROD`, `SFTP_PROD_*` (host, porta `2323`, usuário e senha de **produção**) e `SFTP_DIR`.
+   - `API_TOKEN`: token **novo**, aleatório, com 32 ou mais caracteres, diferente do de desenvolvimento. A API não sobe com token vazio, curto ou `dev-change-me`.
+   - `SFTP_AMBIENTE_PROD=CYWSXT_PROD`, `SFTP_PROD_*` (host, porta `2323`, usuário e senha de **produção**, e `SFTP_PROD_HOSTKEY`) e `SFTP_DIR`. Confira a impressão digital a partir do servidor da API: `ssh-keyscan -p 2323 <SFTP_PROD_HOST> | ssh-keygen -lf -` deve mostrar o mesmo `SHA256:...` do `.env.example`.
+   - `IA_HABILITADA=true` e `ANTHROPIC_API_KEY` (chave da conta da empresa); se quiser, `IA_MODELO` (`claude-haiku-4-5` custa menos), `IA_TIMEOUT_MS` e `IA_MAX_CHARS`. A API não sobe com a IA ligada e a chave vazia; com a IA desligada, sobe com aviso no console e nenhum anexo é verificado.
+   - `EXTRAIR_BASE64=false` (ou ausente): o `POST /extrair` fica desligado em produção.
    - `SFTP_DEV_*` **vazios**: a produção não precisa da credencial de dev. Uma chamada com outro ambiente volta "SFTP DEV não configurado".
    - Permissão restrita: `chown ocr: .env && chmod 600 .env`.
 4. **Subir**: `pm2 start infra/ecosystem.config.cjs --env production` (sobe na porta 6177), depois `pm2 save` e `pm2 startup` (volta após reboot). O `ecosystem` não define `API_TOKEN`: o token vem só do `.env`.
-   - **Docker** como alternativa, com o `.env` de produção em `api-extracao-texto/.env`: `API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build`. O `restart: unless-stopped` volta após reboot (serviço do Docker habilitado: `systemctl enable docker`). `docker ps` deve mostrar `api-extracao-texto` como `healthy`.
+   - **Docker** como alternativa, com o `.env` de produção em `api-extracao-texto/.env`: `API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build`. O `restart: unless-stopped` volta após reboot (serviço do Docker habilitado: `systemctl enable docker`). `docker ps` deve mostrar `api-extracao-texto` como `healthy`.
 5. **Firewall**: porta 6177 liberada só para o IP do AppServer. Não expor na internet.
+   - **pm2**: `ufw allow from <IP_APPSERVER> to any port 6177 proto tcp` e `ufw deny 6177/tcp` (o `setup-linux.sh` faz isso com `APPSERVER_IP`). O `ufw` precisa estar ativo (`ufw status`); antes de ativar, libere o SSH.
+   - **Docker**: o Docker grava as próprias regras de iptables e **ignora o `ufw`**. Bloqueie na chain `DOCKER-USER` e torne a regra persistente (`apt install iptables-persistent` e `netfilter-persistent save`):
+     ```bash
+     sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 6177 --ctdir ORIGINAL ! -s <IP_APPSERVER> -j DROP
+     ```
+   - Conferir a partir de **outra** máquina da rede (não o AppServer): `curl -m 5 http://10.1.5.14:6177/health` deve dar timeout. Do AppServer deve responder `{"ok":true}`.
 6. **Teste a partir do servidor**, sem mostrar o token no histórico:
    ```bash
-   read -rs TOKEN && curl -s -X POST http://localhost:6177/extrair-sftp \
+   read -rs TOKEN && curl -s -X POST http://localhost:6177/verificar-sftp \
      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"arquivo":"implantacao-teste-inexistente.pdf","ambiente":"CYWSXT_PROD"}'
+     -d '{"arquivo":"implantacao-teste-inexistente.pdf","ambiente":"CYWSXT_PROD","medicamentos":[{"codigo":"TESTE","descricao":"TESTE"}]}'
    ```
-   Esperado: `{"ok":false,"erro":"arquivo não encontrado no SFTP PROD: ..."}`, o que mostra que token e SFTP de **produção** estão OK. Com 401 o token não confere; com `SFTP DEV` na mensagem, o `SFTP_AMBIENTE_PROD` não bate; com outro erro, conferir as `SFTP_PROD_*`.
+   Esperado: `{"ok":false,"erro":"arquivo não encontrado no SFTP PROD: ..."}`, o que mostra que token e SFTP de **produção** estão OK. Com 401 o token não confere; com `SFTP DEV` na mensagem, o `SFTP_AMBIENTE_PROD` não bate; com outro erro, conferir as `SFTP_PROD_*`. A IA é conferida com um anexo real no diagnóstico do Protheus (seção 2.4).
 
 ## 2. Protheus
 
@@ -68,6 +78,8 @@ Conferir também os `MV_REL*` do SMTP de produção (`configuracoes.md`, seção
 
 Executar `U_chkMEDALTC()` uma vez. Ele não grava o `Z_NOTIENCA` nem envia e-mail. Todas as linhas devem sair `[OK]`: token, watermark, medicamentos, B71 da janela, API + token + SFTP e SMTP.
 
+Depois, `U_chkMEDALTC("<ACB_OBJETO>")` com um anexo real que cite um medicamento de alto custo: deve sair `[OK] Verificacao de <anexo> (extracao + IA) - via <metodo> e <modelo> em <s>s` e a lista dos medicamentos que entrariam no alerta. "IA indisponivel" indica `IA_HABILITADA`, chave ou saída 443 (ver o log da API, `IA falhou ...`).
+
 ## 3. Scheduler
 
 Em **SIGACFG → Schedule** (cadastro de agendamentos):
@@ -88,7 +100,7 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 
 ```
 [OSMEDALTC][INFO] Inicio da execucao (empresa 01, filial 01)
-[OSMEDALTC][INFO] Config: ambiente CYWSXT_PROD | API http://10.1.5.14:6177/extrair-sftp | e-mail <__MAIL_TO>
+[OSMEDALTC][INFO] Config: ambiente CYWSXT_PROD | API http://10.1.5.14:6177/verificar-sftp | e-mail <__MAIL_TO>
 [OSMEDALTC][INFO] <n> medicamento(s) de alto custo carregado(s) ...
 [OSMEDALTC][INFO] Watermark Z_NOTIENCA = <valor>; buscando B71 ...
 [OSMEDALTC][INFO] Nenhuma B71 nova.   (ou o resumo "<x> de <y> B71 verificada(s), <z> e-mail(s) enviado(s)")
@@ -97,6 +109,8 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 
 - Se a linha `Config` mostrar `localhost:3010`, o ambiente não se chama `CYWSXT_PROD` (a comparação ignora maiúsculas): conferir o nome do ambiente no `appserver.ini` antes de seguir.
 - `monitoramento.sql`, consulta 2: `PENDENTES` volta a 0 depois de cada execução.
+- Cada anexo verificado aparece como `<anexo>: texto via <método>, IA <modelo> em <s>s, n achado(s)`.
+- No log do job, `mascaramento para a IA: n nome(s)/matricula da guia` deve mostrar `n` maior que zero; com `0`, os campos de `__CPO_NOMES` / `__CPO_MATRIC` não existem nas tabelas de origem e precisam ser ajustados no fonte (conferir no SX3).
 - O primeiro alerta real chega em `__MAIL_TO` com os dados da guia e dos medicamentos.
 
 ## 5. Monitoramento contínuo
@@ -106,6 +120,14 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 | `ERROR` "sem resposta da API" / "Token Authorization inválido" | API fora, rede ou token diferente | `pm2 status` / `pm2 logs api-extracao-texto` (Docker: `docker ps` / `docker logs api-extracao-texto`); conferir `Z_MEDAPIT` × `API_TOKEN`. O job retoma sozinho |
 | `ERROR` "ambiente should not be empty" | Fonte antigo no RPO, sem o campo `ambiente` | Aplicar o patch atual do `OS_MEDALTC.tlpp`. O job retoma sozinho |
 | `ERROR` "SFTP DEV não configurado" na produção | O ambiente do AppServer não se chama `SFTP_AMBIENTE_PROD` (`CYWSXT_PROD`) | Conferir o nome do ambiente e o `.env` |
+| `ERROR` "chave do servidor SFTP ... não confere" | O servidor SFTP apresentou outra chave: troca feita pela TOTVS ou servidor falso no caminho | Confirmar com a TOTVS antes de aceitar a chave nova; depois atualizar `SFTP_PROD_HOSTKEY` no `.env` e reiniciar a API. O job retoma sozinho |
+| `ERROR` "API ocupada" | Fila de extração cheia (mais de 20 esperando) | Normal só com chamadas de fora do job. O job retoma sozinho |
+| `ERROR` "Cannot POST /verificar-sftp" | Fonte atual no RPO com a API antiga | Atualizar a API (seção 1). O job retoma sozinho |
+| `ERROR` "property ia should not exist" | Patch intermediário no RPO com a API nova | Aplicar o patch atual do `OS_MEDALTC.tlpp`. O job retoma sozinho |
+| `ERROR` "IA indisponivel: ..." | Claude fora, timeout, chave inválida, `IA_HABILITADA=false` ou saída 443 bloqueada | Sem a IA não há verificação: o job para na B71 e a retoma na próxima execução. Ver o log da API (`IA falhou ...`) |
+| `ERROR` "medicamentos should not be empty" ou "descricao must be shorter" | Lista de medicamentos vazia ou com texto acima do limite da API (1000 caracteres por descrição ou termo) | Conferir a BR8/BA8 (`U_chkMEDALTC()` lista os medicamentos). O job retoma quando a lista for aceita |
+| `WARN` "[IA] ...: texto maior que IA_MAX_CHARS" | Anexo com texto maior que o limite enviado ao Claude | A IA leu só o início do anexo. Conferir o anexo manualmente ou aumentar `IA_MAX_CHARS` |
+| `INFO` "[IA] ... com confianca baixa: fora do alerta" | O Claude achou uma citação duvidosa | Informativo; conferir o anexo se o medicamento for relevante |
 | `ERROR` "SMTP ... falha" | Servidor de e-mail indisponível ou credencial | Conferir `MV_REL*`. O e-mail sai na próxima execução |
 | `ERROR` "campo ... nao existe no dicionario" | Mapa de guia (`fCampoGuia`) não bate com o dicionário | Job parado nessa B71 até corrigir o fonte |
 | `WARN` "... descartado (arquivo não encontrado no SFTP)" | `ACB_OBJETO` não está na pasta do SFTP | Informativo; a B71 segue |
@@ -123,6 +145,7 @@ Riscos conhecidos, sem correção por ora:
 ## 6. Rollback
 
 1. **Desativar o agendamento** no Schedule. É imediato e sem efeito colateral: nada é gravado fora do `Z_NOTIENCA`.
+   - Para voltar à busca exata sem IA: reaplicar o patch anterior do `OS_MEDALTC.tlpp` (o que chama o `/extrair-sftp` e procura as descrições no texto). A API nova continua atendendo esse endpoint.
 2. Se necessário, retirar `OS_MEDALTC.tlpp` do RPO (patch de remoção) e parar a API (`pm2 stop api-extracao-texto`, ou `docker compose -f infra/docker-compose.yml down`).
 
 Ao reativar, o job retoma do `Z_NOTIENCA`, mas só verifica B71 do dia corrente: as de dias em que ficou desligado não são processadas (o aviso de "dia(s) anterior(es)" lista quantas).
@@ -136,6 +159,7 @@ Ao reativar, o job retoma do `Z_NOTIENCA`, mas só verifica B71 do dia corrente:
 | Mudar o servidor ou a porta da API | `__URL_PROD` (ou `__ENV_PROD`, se o ambiente mudar de nome) no fonte + novo patch |
 | Mudar o destinatário | `__MAIL_TO` no fonte + novo patch |
 | Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8 (vale a partir da próxima execução) |
+| Trocar a chave da Anthropic ou o modelo | `ANTHROPIC_API_KEY` / `IA_MODELO` no `.env` + reiniciar a API como na troca de token |
 | Reprocessar uma B71 do dia | `Z_NOTIENCA` = recno − 1, com o agendamento pausado. Reenvia o e-mail dessa B71 e das seguintes |
 | Verificar B71 de outra data (ex.: dia em que o job ficou parado) | Com o agendamento pausado: `Z_NOTIENCA` = primeiro recno da data − 1 (`U_OSCRIAZNOT("<valor>")`) e `U_dataMEDALTC("AAAAMMDD")`. O watermark avança sobre a data; na próxima rodada normal as B71 de hoje acima dele são verificadas (as que já tinham sido reenviam e-mail) |
 
@@ -143,13 +167,31 @@ Ao reativar, o job retoma do `Z_NOTIENCA`, mas só verifica B71 do dia corrente:
 
 - [ ] Etapa 10 aprovada (`U_tstMEDALTC` OK, e-mail conferido)
 - [ ] Credenciais expostas em 28/09/2026 trocadas: `API_TOKEN` de dev (e `Z_MEDAPIT` dos ambientes de teste), `SFTP_DEV_PASSWORD` e `SFTP_PROD_PASSWORD`
-- [ ] API de produção no ar em `10.1.5.14:6177` (`pm2 save` feito, ou Docker `healthy`), firewall só para o AppServer
-- [ ] `.env` de produção com token novo, `SFTP_PROD_*` e `SFTP_DIR`, `SFTP_DEV_*` vazios, `chmod 600`
+- [ ] API de produção no ar em `10.1.5.14:6177` (`pm2 save` feito, ou Docker `healthy`)
+- [ ] Firewall só para o AppServer (Docker: regra na `DOCKER-USER`), conferido com `curl` de outra máquina dando timeout
+- [ ] Envio dos textos à Anthropic aprovado (jurídico/DPO, DPA, ZDR) e saída 443 para `api.anthropic.com` (seção 9)
+- [ ] `.env` de produção com token novo (32+ caracteres), `SFTP_PROD_*` com `SFTP_PROD_HOSTKEY` conferido, `SFTP_DIR`, `SFTP_DEV_*` vazios, `IA_HABILITADA=true` + `ANTHROPIC_API_KEY`, `EXTRAIR_BASE64` desligado, `chmod 600`
 - [ ] `curl` do passo 1.6 devolvendo "arquivo não encontrado no SFTP PROD"
 - [ ] `__DATA_DBG` e `__CODOBJ` vazios; `__MAIL_TO` conferido (go-live com `michel.ramos@...`, trocar depois para a caixa da auditoria)
 - [ ] Patch aplicado só com `OS_MEDALTC.tlpp`
 - [ ] SX6 `Z_NOTIENCA` (valor de partida) e `Z_MEDAPIT` cadastrados
-- [ ] Log mostrando `Config: ambiente CYWSXT_PROD | API http://10.1.5.14:6177/extrair-sftp`
-- [ ] `U_chkMEDALTC()` com todas as linhas `[OK]` em produção
+- [ ] Log mostrando `Config: ambiente CYWSXT_PROD | API http://10.1.5.14:6177/verificar-sftp`
+- [ ] `U_chkMEDALTC()` com todas as linhas `[OK]` em produção, e `U_chkMEDALTC("<ACB_OBJETO>")` com a verificação pela IA `[OK]`
 - [ ] Agendamento `U_OSMEDALTC` a cada 15 min ativo
 - [ ] Primeiras execuções acompanhadas no log e `PENDENTES` zerando
+
+## 9. IA (Claude)
+
+A IA é a verificação dos medicamentos: sem ela nenhum anexo é verificado (referência em `configuracoes.md`, seção 1.1). Antes do go-live:
+
+1. **Aprovação**: jurídico/DPO de acordo com o envio do texto dos anexos (dados de saúde, com CPF, CNS, carteirinha, telefone, e-mail, data de nascimento e os nomes do beneficiário e do solicitante mascarados; nomes de terceiros soltos no texto ainda podem passar) à Anthropic. Formalizar os termos comerciais, o DPA e a retenção zero de dados (ZDR) com a Anthropic.
+2. **Rede**: saída HTTPS (443) do servidor da API para `api.anthropic.com`. É o único destino externo; a porta 6177 continua fechada para fora. Conferir do servidor: `curl -sI https://api.anthropic.com` deve responder (qualquer código HTTP).
+3. **API**: `IA_HABILITADA=true` e `ANTHROPIC_API_KEY` no `.env` (seção 1, passo 3).
+4. **Conferência**: `U_chkMEDALTC("<ACB_OBJETO>")` com anexos reais já conhecidos (um com o nome exato do cadastro, um com nome comercial, um sem medicamento de alto custo), comparando a lista com o que a auditoria espera.
+
+Acompanhamento nas primeiras semanas:
+
+- A auditoria confere os alertas: achados errados (ruído) e anexos com medicamento que não geraram alerta (perda). As linhas `[IA] ... com confianca baixa` mostram citações duvidosas que ficaram fora do alerta.
+- Custo: log da API (tokens por chamada, `IA claude-...: n achado(s) ... (entrada, cache, saída)`) e painel da Anthropic. Todo anexo gera uma chamada. Para reduzir, `IA_MODELO=claude-haiku-4-5`, conferindo de novo a precisão com os mesmos anexos.
+
+Tempo por anexo: a chamada ao Claude soma até `IA_TIMEOUT_MS` (padrão 60 s) ao OCR, dentro dos 300 s do `__API_TIMEOUT`. Se o log mostrar anexos perto desse limite, reduza `IA_TIMEOUT_MS` ou `PDF_MAX_PAGINAS`.

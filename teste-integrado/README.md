@@ -12,7 +12,7 @@ Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → anexos
 ## 1. Pré-requisitos
 
 - API no ar e com os testes passando: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1`.
-- API alcançável pelo AppServer na URL do ambiente: fora do `CYWSXT_PROD` o job usa `http://localhost:3010/extrair-sftp`, então a API precisa estar na mesma máquina do AppServer; no `CYWSXT_PROD`, `http://10.1.5.14:6177/extrair-sftp`. A linha `Config: ambiente ... | API ...` do log mostra a URL escolhida.
+- API alcançável pelo AppServer na URL do ambiente: fora do `CYWSXT_PROD` o job usa `http://localhost:3010/verificar-sftp`, então a API precisa estar na mesma máquina do AppServer; no `CYWSXT_PROD`, `http://10.1.5.14:6177/verificar-sftp`. A API precisa ser a versão com o `/verificar-sftp`. A linha `Config: ambiente ... | API ...` do log mostra a URL escolhida.
 - SX6: `Z_NOTIENCA` (via `U_OSCRIAZNOT`) e `Z_MEDAPIT` com o mesmo valor do `API_TOKEN` do `.env` da API.
 - SMTP: `MV_RELSERV`, `MV_RELACNT`, `MV_RELPSW`, `MV_RELAUTH`, `MV_RELSSL`, `MV_RELTLS`, `MV_RELFROM` (ver `configuracoes.md`).
 - `__MAIL_TO` apontando para uma caixa que você consegue ler.

@@ -1,7 +1,9 @@
 # API NestJS de extração + OCR — compose base (produção)
-# Produção: API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build
+# Produção: API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build
 # Dev/testes: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
-# Porta do host: API_HOST_PORT (padrão 3010)
+# Porta do host: API_HOST_PORT (padrão 3010), só na interface API_BIND_IP (padrão 127.0.0.1).
+# O Docker ignora as regras do ufw: restrinja o acesso ao AppServer na chain DOCKER-USER
+# (implantacao/README.md, passo 1.5).
 services:
   api-extracao:
     build:
@@ -9,7 +11,8 @@ services:
       dockerfile: Dockerfile
     image: alerta-alto-custo:latest
     container_name: api-extracao-texto
-    # API_TOKEN e SFTP_* vêm do .env da API (fora do git; copiar de .env.example).
+    # API_TOKEN, SFTP_*, IA_* e ANTHROPIC_API_KEY vêm do .env da API (fora do git; copiar de .env.example).
+    # Com IA_HABILITADA=true, o container precisa de saída HTTPS (443) para api.anthropic.com.
     # Os valores abaixo têm precedência sobre ele.
     env_file:
       - ../api-extracao-texto/.env
@@ -19,8 +22,9 @@ services:
       PDF_MIN_TEXT_CHARS: "40"
       PDF_MAX_PAGINAS: "30"
       BODY_LIMIT: 25mb
+      EXTRAIR_BASE64: "false"
     ports:
-      - "${API_HOST_PORT:-3010}:3010"
+      - "${API_BIND_IP:-127.0.0.1}:${API_HOST_PORT:-3010}:3010"
     # init encerra os filhos (pdftoppm/tesseract) junto com o node
     init: true
     restart: unless-stopped

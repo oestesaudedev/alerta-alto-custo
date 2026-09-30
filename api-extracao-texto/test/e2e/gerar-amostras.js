@@ -1,7 +1,8 @@
-// Gera as 3 amostras da fase 4 em test/e2e/amostras/:
+// Gera as amostras da fase 4 em test/e2e/amostras/:
 //   texto.pdf      PDF com camada de texto (caminho pdf-parse)
 //   imagem.jpg     página renderizada com pdftoppm (caminho OCR de imagem)
 //   escaneado.pdf  PDF que só contém a imagem, sem texto (caminho pdftoppm + OCR)
+//   comercial.pdf  PDF com texto que cita só nomes comerciais (teste da IA)
 // Requer pdftoppm (poppler-utils): rodar dentro do container da API.
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -15,6 +16,17 @@ const LINHAS = [
   'Beneficiario: PACIENTE DE TESTE',
   'Medicamento solicitado: INFLIXIMABE 100 MG',
   'Nome comercial: REMICADE',
+  'Posologia: 5 mg/kg a cada 8 semanas',
+  'Medico solicitante: CRM 12345',
+];
+
+// Sem o nome genérico: a IA precisa reconhecer os nomes comerciais
+const LINHAS_COMERCIAL = [
+  'OESTE SAUDE - SOLICITACAO DE MEDICAMENTO',
+  'Guia: 000123456790',
+  'Beneficiario: PACIENTE DE TESTE - CPF 123.456.789-09',
+  'Medicamento solicitado: REMICADE 100 MG, 3 frascos',
+  'Uso anterior: STELARA 45 MG (suspenso)',
   'Posologia: 5 mg/kg a cada 8 semanas',
   'Medico solicitante: CRM 12345',
 ];
@@ -55,9 +67,9 @@ function stream(dicionario, dados) {
   ]);
 }
 
-function gerarPdfTexto() {
+function gerarPdfTexto(linhas = LINHAS) {
   let conteudo = 'BT /F1 16 Tf 50 780 Td\n';
-  LINHAS.forEach((linha, i) => {
+  linhas.forEach((linha, i) => {
     if (i > 0) conteudo += '0 -28 Td\n';
     conteudo += `(${escapePdf(linha)}) Tj\n`;
   });
@@ -123,7 +135,9 @@ const jpeg = fs.readFileSync(path.join(OUT_DIR, 'imagem.jpg'));
 
 fs.writeFileSync(path.join(OUT_DIR, 'escaneado.pdf'), gerarPdfEscaneado(jpeg));
 
-for (const f of ['texto.pdf', 'imagem.jpg', 'escaneado.pdf']) {
+fs.writeFileSync(path.join(OUT_DIR, 'comercial.pdf'), gerarPdfTexto(LINHAS_COMERCIAL));
+
+for (const f of ['texto.pdf', 'imagem.jpg', 'escaneado.pdf', 'comercial.pdf']) {
   const { size } = fs.statSync(path.join(OUT_DIR, f));
   console.log(`gerado ${f} (${(size / 1024).toFixed(1)} KB)`);
 }

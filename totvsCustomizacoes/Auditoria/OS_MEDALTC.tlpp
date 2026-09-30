@@ -14,8 +14,8 @@
 // URL da API: __URL_PROD no ambiente __ENV_PROD, __URL_DEV em qualquer outro (ver fApiUrl)
 #DEFINE __ENV_PROD   "CYWSXT_PROD"
 #DEFINE __URL_PROD   "http://10.1.5.14:6177"
-#DEFINE __URL_DEV    "http://localhost:3010"
-#DEFINE __API_PATH   "/extrair-sftp"
+#DEFINE __URL_DEV    "https://easily-honest-pamula.ngrok-free.dev"
+#DEFINE __API_PATH   "/verificar-sftp"
 #DEFINE __API_URL    fApiUrl()
 #DEFINE __API_TOKEN  SuperGetMV("Z_MEDAPIT", .F., "")
 
@@ -43,28 +43,47 @@
 #DEFINE __I_STATUS   6
 #DEFINE __I_TEXTOS   7
 #DEFINE __I_DATMOV   8
-#DEFINE __I_TAM      8
+#DEFINE __I_PESSOAS  9
+#DEFINE __I_TAM      9
+
+// Campos de nome lidos na tabela origem da guia (prefixo = alias), se existirem no dicionario
+#DEFINE __CPO_NOMES  {"_NOMUSR", "_NOMSOL"}
+// Campos da matricula do beneficiario na tabela origem, na ordem da chave da BA1
+#DEFINE __CPO_MATRIC {"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}
 
 // Posicoes de cada anexo em __I_ANEXOS
 #DEFINE __A_CODOBJ   1
 #DEFINE __A_OBJETO   2
 
-// Posicoes de cada texto em __I_TEXTOS (preenchido por fProcessaB71)
+// Posicoes de cada anexo verificado em __I_TEXTOS (preenchido por fProcessaB71)
 #DEFINE __T_OBJETO   1
-#DEFINE __T_TEXTO    2
-#DEFINE __T_METODO   3
+#DEFINE __T_METODO   2
+#DEFINE __T_ACHADOS  3
+#DEFINE __T_AVISOS   4
 
 // Posicoes do retorno de fExtraiTexto()
 #DEFINE __R_OK       1
-#DEFINE __R_TEXTO    2
-#DEFINE __R_METODO   3
-#DEFINE __R_ERRO     4
-#DEFINE __R_DEFINIT  5
+#DEFINE __R_METODO   2
+#DEFINE __R_ERRO     3
+#DEFINE __R_DEFINIT  4
+#DEFINE __R_ACHADOS  5
+#DEFINE __R_AVISOS   6
+#DEFINE __R_MODELO   7
+
+// Posicoes de cada achado da API em __R_ACHADOS / __T_ACHADOS
+#DEFINE __V_CODIGO   1
+#DEFINE __V_TERMO    2
+#DEFINE __V_OBS      3
+
+// Posicoes de cada aviso da API em __R_AVISOS / __T_AVISOS
+#DEFINE __W_TIPO     1
+#DEFINE __W_CODIGO   2
+#DEFINE __W_OBS      3
 
 // Segundos por anexo. A API limita o OCR de PDF a PDF_MAX_PAGINAS paginas para caber aqui
 #DEFINE __API_TIMEOUT 300
 
-// Termos com menos letras que isso geram falso positivo no texto do OCR
+// Termos com menos letras que isso nao vao para a IA (a descricao da BR8 sempre vai)
 #DEFINE __MIN_TERMO  4
 
 // Posicoes de cada medicamento encontrado por fBuscaMed()
@@ -75,6 +94,7 @@
 #DEFINE __F_CODPAD   5
 #DEFINE __F_VLRTAB   6
 #DEFINE __F_VLRGUI   7
+#DEFINE __F_IAOBS    8
 
 // Posicoes do item de medicamento devolvido por fCarregaMed()
 #DEFINE __M_CODPSA   1
@@ -99,14 +119,20 @@ Job de deteccao de medicamentos de alto custo em anexos de guias.
 
 Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP = __CODDEP)
   -> tabela origem (BEA | BE4 | B44 | B4Q | B4A) -> B53 -> AC9 -> ACB
-  -> API de extracao (__API_URL) com o ACB_OBJETO: a API baixa o arquivo do SFTP e devolve o texto
-  -> match BR8/BA8 (BR8_ALTCUS = '1') -> e-mail para __MAIL_TO.
+  -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 (BR8_ALTCUS = '1') e os nomes da guia
+     a mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da
+     lista citados (nome exato, comercial, principio ativo, abreviacao, erro de OCR)
+  -> valor na guia -> e-mail para __MAIL_TO.
+
+A IA e a unica verificacao: achados com confianca alta ou media entram no alerta, baixa so no log.
+Sem a IA (desligada na API, sem chave, fora do ar) a API devolve erro e a B71 fica para a proxima
+rodada, como em qualquer falha temporaria da API.
 
 As credenciais do SFTP ficam no .env da API, nao no Protheus. O job envia o ambiente
 (GetEnvServer) no POST e a API usa o SFTP de producao quando ele e CYWSXT_PROD, senao o de dev.
 
-URL da API por ambiente (GetEnvServer): CYWSXT_PROD -> http://10.1.5.14:6177/extrair-sftp;
-qualquer outro -> http://localhost:3010/extrair-sftp.
+URL da API por ambiente (GetEnvServer): CYWSXT_PROD -> __URL_PROD + __API_PATH;
+qualquer outro -> __URL_DEV + __API_PATH.
 
 Parametros SX6:
   Z_NOTIENCA - ultimo R_E_C_N_O_ da B71 ja verificado (criar com U_OSCRIAZNOT)
@@ -266,7 +292,8 @@ Return cData
 /*/{Protheus.doc} chkMEDALTC
 Diagnostico do teste integrado: confere cada peca sem gravar Z_NOTIENCA e sem enviar e-mail
 (configuracao, watermark, medicamentos, B71 da janela, API + token + SFTP e conexao SMTP).
-Com cArquivo (um ACB_OBJETO real), extrai o texto e lista os medicamentos que seriam detectados.
+Com cArquivo (um ACB_OBJETO real), verifica o anexo na API (extracao + IA) e lista os medicamentos
+que entrariam no alerta e os avisos. Sem cArquivo, a IA nao e chamada.
 Uso: U_chkMEDALTC() ou U_chkMEDALTC("arquivo.pdf")
 @type function
 @param cArquivo, character, opcional; nome do arquivo no SFTP (sem pasta)
@@ -322,6 +349,7 @@ Static Function fDiagnostico(cArquivo)
 	Local aRes     := {}
 	Local aItem    := {}
 	Local aAchados := {}
+	Local aMedApi  := {}
 	Local oServer  := Nil
 	Local nI       := 0
 
@@ -350,23 +378,29 @@ Static Function fDiagnostico(cArquivo)
 			IIf(nCampo > 0, "; " + cValToChar(nCampo) + " com campo de guia inexistente (bloqueia o watermark)", "")) .And. lOk
 	EndIf
 
+	// A API exige a lista de medicamentos mesmo no teste de conexao
+	aMedApi := fMedApi(aMed)
 	nInicio := Seconds()
 	If Empty(cArquivo)
-		aRes := fExtraiTexto("chk_medaltc_inexistente.pdf")
+		aRes := fExtraiTexto("chk_medaltc_inexistente.pdf", aMedApi)
 		lOk := fChk("API + token + SFTP (" + __API_URL + ")", aRes[__R_DEFINIT] .And. "encontrado no SFTP" $ aRes[__R_ERRO],;
-			IIf(aRes[__R_DEFINIT], "API respondeu e consultou o SFTP", aRes[__R_ERRO])) .And. lOk
+			IIf(aRes[__R_DEFINIT], "API respondeu e consultou o SFTP",;
+				IIf("Cannot POST" $ aRes[__R_ERRO], "API sem o " + __API_PATH + ": atualizar a API antes do patch", aRes[__R_ERRO]))) .And. lOk
+		fLog("INFO", "  Para testar a extracao e a IA, informe um arquivo: U_chkMEDALTC(" + '"arquivo.pdf"' + ")")
 	Else
-		aRes := fExtraiTexto(cArquivo)
-		lOk := fChk("Extracao de " + cArquivo, aRes[__R_OK],;
-			IIf(aRes[__R_OK], cValToChar(Len(aRes[__R_TEXTO])) + " caractere(s) via " + aRes[__R_METODO] +;
-				" em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s", aRes[__R_ERRO])) .And. lOk
+		aRes := fExtraiTexto(cArquivo, aMedApi)
+		lOk := fChk("Verificacao de " + cArquivo + " (extracao + IA)", aRes[__R_OK] .And. !Empty(aRes[__R_MODELO]),;
+			IIf(!aRes[__R_OK], aRes[__R_ERRO],;
+				IIf(Empty(aRes[__R_MODELO]), "API sem a IA obrigatoria (versao anterior): atualizar a API",;
+					"via " + aRes[__R_METODO] + " e " + aRes[__R_MODELO] + " em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s"))) .And. lOk
 		If aRes[__R_OK]
 			aItem := Array(__I_TAM)
-			aItem[__I_TEXTOS] := {{cArquivo, aRes[__R_TEXTO], aRes[__R_METODO]}}
+			aItem[__I_TEXTOS] := {{cArquivo, aRes[__R_METODO], aRes[__R_ACHADOS], aRes[__R_AVISOS]}}
 			aAchados := fBuscaMed(aItem, aMed)
-			fLog("INFO", "  " + cValToChar(Len(aAchados)) + " medicamento(s) de alto custo detectado(s) no arquivo")
+			fLog("INFO", "  " + cValToChar(Len(aAchados)) + " medicamento(s) de alto custo entraria(m) no alerta")
 			For nI := 1 To Len(aAchados)
-				fLog("INFO", "  " + aAchados[nI][__F_CODPSA] + " " + aAchados[nI][__F_DESCRI] + " | termo: " + aAchados[nI][__F_TERMO])
+				fLog("INFO", "  " + aAchados[nI][__F_CODPSA] + " " + aAchados[nI][__F_DESCRI] + " | termo: " + aAchados[nI][__F_TERMO] +;
+					" | " + aAchados[nI][__F_IAOBS])
 			Next nI
 		EndIf
 	EndIf
@@ -400,6 +434,7 @@ Static Function fProcessa(aRes, cData)
 	Local nUltimo  := 0
 	Local nGravado := 0
 	Local aMed     := {}
+	Local aMedApi  := {}
 	Local aB71     := {}
 	Local nEmails  := 0
 	Local nI       := 0
@@ -424,6 +459,8 @@ Static Function fProcessa(aRes, cData)
 		Return
 	EndIf
 
+	aMedApi := fMedApi(aMed)
+
 	fLog("INFO", "Watermark " + __PAR_WATER + " = " + cValToChar(nUltimo) +;
 		"; buscando B71 com R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		", CODDEP = " + __CODDEP + ", DATMOV = " + fDataMov(cData))
@@ -440,7 +477,7 @@ Static Function fProcessa(aRes, cData)
 	nGravado := nUltimo
 	For nI := 1 To Len(aB71)
 		fLogB71(aB71[nI])
-		If !fVerificaB71(aB71[nI], aMed, @nEmails)
+		If !fVerificaB71(aB71[nI], aMed, @nEmails, aMedApi)
 			fLog("WARN", "B71 " + cValToChar(aB71[nI][__I_RECNO]) + " nao concluida; ela e as seguintes" +;
 				" serao retomadas na proxima execucao. " + __PAR_WATER + " permanece em " + cValToChar(nGravado) + ".")
 			Exit
@@ -458,15 +495,16 @@ Static Function fProcessa(aRes, cData)
 Return
 
 /*/{Protheus.doc} fVerificaB71
-Pipeline completo de uma B71: extrai o texto dos anexos, procura os medicamentos e,
-se achar, envia o e-mail.
+Pipeline completo de uma B71: verifica os anexos na API, monta os medicamentos achados e,
+se houver, envia o e-mail.
 @type function
 @param aItem, array, item devolvido por fConsulta()
 @param aMed, array, medicamentos devolvidos por fCarregaMed()
 @param nEmails, numeric, contador de e-mails enviados (por referencia)
+@param aMedApi, array, lista de medicamentos enviada a API (fMedApi)
 @return logical, .T. se a B71 pode ser dada como verificada (avancar Z_NOTIENCA)
 /*/
-Static Function fVerificaB71(aItem, aMed, nEmails)
+Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi)
 
 	Local aAchados := {}
 	Local cLista   := ""
@@ -477,7 +515,7 @@ Static Function fVerificaB71(aItem, aMed, nEmails)
 		Return .F.
 	EndIf
 
-	If !fProcessaB71(aItem)
+	If !fProcessaB71(aItem, aMedApi)
 		Return .F.
 	EndIf
 
@@ -510,41 +548,86 @@ Static Function fVerificaB71(aItem, aMed, nEmails)
 Return .T.
 
 /*/{Protheus.doc} fBuscaMed
-Procura os termos de cada medicamento nos textos extraidos da B71.
-A comparacao e por palavra inteira, com texto e termos normalizados por fLimpa().
+Monta os medicamentos achados pela IA (na API) em cada anexo da B71 e registra os avisos no log.
 @type function
-@return array, { {cCodPsa, cDescri, cTermo, cObjeto, cCodPad, cVlrTab, cVlrGui}, ... } � no maximo
+@return array, { {cCodPsa, cDescri, cTermo, cObjeto, cCodPad, cVlrTab, cVlrGui, cIaObs}, ... }: no maximo
 	uma ocorrencia por medicamento em cada anexo. cVlrGui e preenchido depois por fValorGuia()
 /*/
 Static Function fBuscaMed(aItem, aMed)
 
 	Local aAchados := {}
-	Local cTexto   := ""
+	Local aTexto   := {}
 	Local nT       := 0
-	Local nM       := 0
-	Local nK       := 0
-	Local aTermos  := {}
 
 	For nT := 1 To Len(aItem[__I_TEXTOS])
-		cTexto := " " + fLimpa(fNormaliza(aItem[__I_TEXTOS][nT][__T_TEXTO])) + " "
-
-		For nM := 1 To Len(aMed)
-			aTermos := aMed[nM][__M_TERMOS]
-			For nK := 1 To Len(aTermos)
-				If (" " + aTermos[nK] + " ") $ cTexto
-					aAdd(aAchados, {aMed[nM][__M_CODPSA], aMed[nM][__M_DESCRI], aTermos[nK], aItem[__I_TEXTOS][nT][__T_OBJETO],;
-						aMed[nM][__M_CODPAD], aMed[nM][__M_VLRTAB], __VLR_ND})
-					Exit
-				EndIf
-			Next nK
-		Next nM
+		aTexto := aItem[__I_TEXTOS][nT]
+		aEval(fAchadosApi(aTexto[__T_ACHADOS], aMed, aTexto[__T_OBJETO]), {|x| aAdd(aAchados, x)})
+		fLogAvisos(aTexto[__T_OBJETO], aTexto[__T_AVISOS])
 	Next nT
 
 Return aAchados
 
+/*/{Protheus.doc} fAchadosApi
+Converte os achados da API de um anexo para o formato de fBuscaMed, com descricao, CODPAD e valor
+de tabela da BR8/BA8. Codigo fora da lista (nao deveria acontecer) so vai para o log.
+@type function
+@param aApi, array, achados de fLeAchados() ou Nil
+@param aMed, array, medicamentos de fCarregaMed()
+@param cObjeto, character, ACB_OBJETO do anexo
+@return array, achados no formato de fBuscaMed
+/*/
+Static Function fAchadosApi(aApi, aMed, cObjeto)
+
+	Local aRet := {}
+	Local nM   := 0
+	Local nI   := 0
+
+	If ValType(aApi) != "A"
+		Return aRet
+	EndIf
+
+	For nI := 1 To Len(aApi)
+		nM := aScan(aMed, {|x| x[__M_CODPSA] == aApi[nI][__V_CODIGO]})
+		If nM == 0
+			fLog("WARN", "  " + cObjeto + ": codigo " + aApi[nI][__V_CODIGO] + " devolvido pela API fora da lista de medicamentos")
+			Loop
+		EndIf
+		aAdd(aRet, {aApi[nI][__V_CODIGO], aMed[nM][__M_DESCRI], aApi[nI][__V_TERMO], cObjeto,;
+			aMed[nM][__M_CODPAD], aMed[nM][__M_VLRTAB], __VLR_ND, aApi[nI][__V_OBS]})
+	Next nI
+
+Return aRet
+
+/*/{Protheus.doc} fLogAvisos
+Registra os avisos da API de um anexo: IA com confianca baixa e texto maior que o limite da IA.
+@type function
+@param cObjeto, character, ACB_OBJETO do anexo
+@param aAvisos, array, avisos de fLeAvisos() ou Nil
+/*/
+Static Function fLogAvisos(cObjeto, aAvisos)
+
+	Local cCodigo := ""
+	Local nI      := 0
+
+	If ValType(aAvisos) != "A"
+		Return
+	EndIf
+
+	For nI := 1 To Len(aAvisos)
+		cCodigo := aAvisos[nI][__W_CODIGO]
+		Do Case
+		Case aAvisos[nI][__W_TIPO] == "confianca-baixa"
+			fLog("INFO", "  [IA] " + cCodigo + " em " + cObjeto + " com confianca baixa: fora do alerta")
+		Case aAvisos[nI][__W_TIPO] == "texto-cortado"
+			fLog("WARN", "  [IA] " + cObjeto + ": " + aAvisos[nI][__W_OBS])
+		EndCase
+	Next nI
+
+Return
+
 /*/{Protheus.doc} fLimpa
-Troca pontuacao, quebras de linha e simbolos por espaco e junta espacos repetidos,
-para que "INFLIXIMABE," e "INFLIXIMABE" casem. Espera texto ja normalizado por fNormaliza().
+Troca pontuacao, quebras de linha e simbolos por espaco e junta espacos repetidos, para que
+descricoes iguais a menos de pontuacao virem um termo so. Espera texto ja normalizado por fNormaliza().
 @type function
 /*/
 Static Function fLimpa(cTexto)
@@ -691,7 +774,7 @@ Static Function fCorpoEmail(aItem, aAchados)
 	cHtml += "<p><b>Medicamentos encontrados:</b></p>"
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
 	cHtml += "<tr><th>C&oacute;digo</th><th>Descri&ccedil;&atilde;o (BR8)</th><th>Valor de tabela</th>" +;
-		"<th>Valor na guia</th><th>Termo encontrado</th><th>Anexo</th></tr>"
+		"<th>Valor na guia</th><th>Termo encontrado</th><th>Anexo</th><th>Observa&ccedil;&atilde;o IA</th></tr>"
 	For nI := 1 To Len(aAchados)
 		cHtml += "<tr>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_CODPSA]) + "</td>"
@@ -700,12 +783,16 @@ Static Function fCorpoEmail(aItem, aAchados)
 		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_VLRGUI]) + "</td>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_TERMO]) + "</td>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_OBJETO]) + "</td>"
+		cHtml += "<td>" + fHtml(aAchados[nI][__F_IAOBS]) + "</td>"
 		cHtml += "</tr>"
 	Next nI
 	cHtml += "</table>"
 	cHtml += '<p style="font-size:11px;color:#555">Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; ' + DToC(Date()) +;
 		". Valor na guia: soma dos itens da guia com o mesmo c&oacute;digo; &quot;nao consta&quot; quando o medicamento" +;
 		" aparece s&oacute; no anexo. &quot;" + __VLR_ND + "&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
+	cHtml += '<p style="font-size:11px;color:#555">Identifica&ccedil;&atilde;o feita pela IA (Claude) sobre o texto do anexo:' +;
+		" nome do cadastro, nome comercial, princ&iacute;pio ativo, abrevia&ccedil;&atilde;o ou erro de leitura." +;
+		" Confira o anexo antes de agir.</p>"
 
 	cHtml += '<p style="color:#888">Mensagem autom&aacute;tica - n&atilde;o responder.</p>'
 	cHtml += "</body></html>"
@@ -741,13 +828,14 @@ Static Function fGravaWatermark(nRecno)
 Return
 
 /*/{Protheus.doc} fProcessaB71
-Extrai o texto de cada anexo da B71 pela API e guarda em aItem[__I_TEXTOS].
+Verifica cada anexo da B71 na API e guarda o resultado em aItem[__I_TEXTOS].
 Anexo com erro definitivo (nao existe no SFTP, extensao nao suportada) e descartado.
 @type function
-@return logical, .F. se houve falha temporaria (API/SFTP fora, timeout, token); a B71
+@param aMedApi, array, lista de medicamentos enviada a API (fMedApi)
+@return logical, .F. se houve falha temporaria (API/SFTP/IA fora, timeout, token); a B71
 	nao deve ser dada como verificada
 /*/
-Static Function fProcessaB71(aItem)
+Static Function fProcessaB71(aItem, aMedApi)
 
 	Local aRes    := {}
 	Local cObjeto := ""
@@ -758,16 +846,21 @@ Static Function fProcessaB71(aItem)
 		Return .T.
 	EndIf
 
+	If fPosOrigem(aItem[__I_ALIMOV], Val(aItem[__I_RECMOV]))
+		aItem[__I_PESSOAS] := fPessoas(aItem[__I_ALIMOV])
+		fLog("INFO", "  mascaramento para a IA: " + cValToChar(Len(aItem[__I_PESSOAS])) + " nome(s)/matricula da guia")
+	EndIf
+
 	For nI := 1 To Len(aItem[__I_ANEXOS])
 		cObjeto := aItem[__I_ANEXOS][nI][__A_OBJETO]
 		nInicio := Seconds()
-		aRes    := fExtraiTexto(cObjeto)
+		aRes    := fExtraiTexto(cObjeto, aMedApi, aItem[__I_PESSOAS])
 
 		Do Case
 		Case aRes[__R_OK]
-			aAdd(aItem[__I_TEXTOS], {cObjeto, aRes[__R_TEXTO], aRes[__R_METODO]})
-			fLog("INFO", "  " + cObjeto + ": " + cValToChar(Len(aRes[__R_TEXTO])) + " caractere(s) via " +;
-				aRes[__R_METODO] + " em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s")
+			aAdd(aItem[__I_TEXTOS], {cObjeto, aRes[__R_METODO], aRes[__R_ACHADOS], aRes[__R_AVISOS]})
+			fLog("INFO", "  " + cObjeto + ": texto via " + aRes[__R_METODO] + ", IA " + aRes[__R_MODELO] + " em " +;
+				cValToChar(Round(Seconds() - nInicio, 1)) + "s, " + cValToChar(Len(aRes[__R_ACHADOS])) + " achado(s)")
 		Case aRes[__R_DEFINIT]
 			fLog("WARN", "  " + cObjeto + ": descartado (" + aRes[__R_ERRO] + ")")
 		Otherwise
@@ -779,31 +872,44 @@ Static Function fProcessaB71(aItem)
 Return .T.
 
 /*/{Protheus.doc} fExtraiTexto
-Pede a API de extracao o texto de um anexo: POST {"arquivo": ACB_OBJETO, "ambiente": GetEnvServer()} em __API_URL.
-A API baixa o arquivo do SFTP do ambiente (prod ou dev) e devolve {ok, texto, metodo} ou {ok:false, erro}.
+Pede a API a verificacao de um anexo: POST em __API_URL com {arquivo: ACB_OBJETO, ambiente: GetEnvServer(),
+medicamentos, mascarar}. A API baixa o arquivo do SFTP do ambiente (prod ou dev), extrai o texto e
+pede ao Claude os medicamentos da lista citados. O texto nao volta para o Protheus.
+Devolve {ok, metodo, modelo, achados, avisos} ou {ok:false, erro} (inclusive "IA indisponivel: ...").
 @type function
 @param cArquivo, character, ACB_OBJETO (so o nome, sem pasta)
-@return array, {lOk, cTexto, cMetodo, cErro, lDefinitivo}. lDefinitivo indica erro que
-	nao muda numa nova tentativa (arquivo inexistente, extensao/nome invalidos)
+@param aMedApi, array, lista de medicamentos (fMedApi); a API recusa lista vazia
+@param aMascarar, array, opcional; nomes e matricula da guia (fPessoas) que a API mascara antes do Claude
+@return array, {lOk, cMetodo, cErro, lDefinitivo, aAchados, aAvisos, cModelo}. lDefinitivo indica
+	erro que nao muda numa nova tentativa (arquivo inexistente, extensao/nome invalidos); aAchados
+	(fLeAchados) e aAvisos (fLeAvisos)
 /*/
-Static Function fExtraiTexto(cArquivo)
+Static Function fExtraiTexto(cArquivo, aMedApi, aMascarar)
 
-	Local aRet    := {.F., "", "", "", .F.}
+	Local aRet    := {.F., "", "", .F., {}, {}, ""}
 	Local oRest   := Nil
 	Local oBody   := JsonObject():New()
 	Local oResp   := JsonObject():New()
 	Local aHeader := {}
+	Local aPessoa := {}
 	Local cHost   := ""
 	Local cPath   := ""
 	Local cResp   := ""
 	Local cErro   := ""
-	Local xTexto  := Nil
 	Local xErro   := Nil
+
+	Default aMedApi   := {}
+	Default aMascarar := {}
 
 	fSplitUrl(__API_URL, @cHost, @cPath)
 
-	oBody["arquivo"]  := EncodeUTF8(cArquivo)
-	oBody["ambiente"] := AllTrim(GetEnvServer())
+	oBody["arquivo"]      := EncodeUTF8(cArquivo)
+	oBody["ambiente"]     := AllTrim(GetEnvServer())
+	oBody["medicamentos"] := aMedApi
+	If Len(aMascarar) > 0
+		aEval(aMascarar, {|x| aAdd(aPessoa, EncodeUTF8(x))})
+		oBody["mascarar"] := aPessoa
+	EndIf
 
 	aAdd(aHeader, "Content-Type: application/json")
 	aAdd(aHeader, "Authorization: Bearer " + AllTrim(__API_TOKEN))
@@ -826,10 +932,11 @@ Static Function fExtraiTexto(cArquivo)
 	EndIf
 
 	If ValType(oResp["ok"]) == "L" .And. oResp["ok"]
-		xTexto := DecodeUTF8(cValToChar(oResp["texto"]))
-		aRet[__R_OK]     := .T.
-		aRet[__R_TEXTO]  := IIf(ValType(xTexto) == "C", xTexto, cValToChar(oResp["texto"]))
-		aRet[__R_METODO] := cValToChar(oResp["metodo"])
+		aRet[__R_OK]      := .T.
+		aRet[__R_METODO]  := cValToChar(oResp["metodo"])
+		aRet[__R_MODELO]  := cValToChar(oResp["modelo"])
+		aRet[__R_ACHADOS] := fLeAchados(oResp["achados"])
+		aRet[__R_AVISOS]  := fLeAvisos(oResp["avisos"])
 		Return aRet
 	EndIf
 
@@ -861,6 +968,91 @@ Static Function fSplitUrl(cUrl, cHost, cPath)
 	EndIf
 
 Return
+
+/*/{Protheus.doc} fLeAchados
+Converte o campo "achados" da resposta da API: [{codigo, termo, origem: ia, observacao}].
+@type function
+@param aLista, array, oResp["achados"] ou Nil
+@return array, { {cCodigo, cTermo, cObs}, ... }
+/*/
+Static Function fLeAchados(aLista)
+
+	Local aRet := {}
+	Local nI   := 0
+
+	If ValType(aLista) != "A"
+		Return aRet
+	EndIf
+
+	For nI := 1 To Len(aLista)
+		If ValType(aLista[nI]) == "J" .And. ValType(aLista[nI]["codigo"]) == "C"
+			aAdd(aRet, {AllTrim(aLista[nI]["codigo"]), fDecUtf8(aLista[nI]["termo"]), fDecUtf8(aLista[nI]["observacao"])})
+		EndIf
+	Next nI
+
+Return aRet
+
+/*/{Protheus.doc} fLeAvisos
+Converte o campo "avisos" da resposta da API: [{tipo: confianca-baixa|texto-cortado, codigo, observacao}].
+@type function
+@param aLista, array, oResp["avisos"] ou Nil
+@return array, { {cTipo, cCodigo, cObs}, ... }
+/*/
+Static Function fLeAvisos(aLista)
+
+	Local aRet := {}
+	Local nI   := 0
+
+	If ValType(aLista) != "A"
+		Return aRet
+	EndIf
+
+	For nI := 1 To Len(aLista)
+		If ValType(aLista[nI]) == "J" .And. ValType(aLista[nI]["codigo"]) == "C"
+			aAdd(aRet, {AllTrim(cValToChar(aLista[nI]["tipo"])), AllTrim(aLista[nI]["codigo"]), fDecUtf8(aLista[nI]["observacao"])})
+		EndIf
+	Next nI
+
+Return aRet
+
+/*/{Protheus.doc} fMedApi
+Monta, uma vez por execucao, a lista de medicamentos enviada a API (LISTA do prompt da IA).
+@type function
+@param aMed, array, medicamentos de fCarregaMed()
+@return array, { JsonObject {codigo, descricao, termos[]}, ... }; termos ja normalizados (fAddTermo)
+/*/
+Static Function fMedApi(aMed)
+
+	Local aLista  := {}
+	Local aTermos := {}
+	Local oMed    := Nil
+	Local nI      := 0
+	Local nK      := 0
+
+	For nI := 1 To Len(aMed)
+		aTermos := {}
+		For nK := 1 To Len(aMed[nI][__M_TERMOS])
+			aAdd(aTermos, EncodeUTF8(aMed[nI][__M_TERMOS][nK]))
+		Next nK
+		oMed := JsonObject():New()
+		oMed["codigo"]    := EncodeUTF8(aMed[nI][__M_CODPSA])
+		oMed["descricao"] := EncodeUTF8(aMed[nI][__M_DESCRI])
+		oMed["termos"]    := aTermos
+		aAdd(aLista, oMed)
+	Next nI
+
+Return aLista
+
+/*/{Protheus.doc} fDecUtf8
+@type function
+@return character, texto UTF-8 da API convertido; o original se a conversao falhar
+/*/
+Static Function fDecUtf8(xTexto)
+
+	Local cTexto := IIf(ValType(xTexto) == "C", xTexto, "")
+	Local xDec   := DecodeUTF8(cTexto)
+
+Return IIf(ValType(xDec) == "C", xDec, cTexto)
 
 /*/{Protheus.doc} fCarregaMed
 Carrega os medicamentos de alto custo: BR8 INNER JOIN BA8, BR8_ALTCUS = '1'.
@@ -1234,7 +1426,7 @@ Return
 /*/{Protheus.doc} fMontaB71
 Resolve guia e anexos de uma B71.
 @type function
-@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov}
+@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov, aPessoas}
 /*/
 Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 
@@ -1251,6 +1443,7 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_ANEXOS] := {}
 	aItem[__I_TEXTOS] := {}
 	aItem[__I_DATMOV] := cDatMov
+	aItem[__I_PESSOAS] := {}
 
 	If Empty(cCampo)
 		aItem[__I_STATUS] := __ST_ALIAS
@@ -1279,6 +1472,81 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_STATUS] := IIf(Len(aItem[__I_ANEXOS]) > 0, __ST_OK, __ST_SEMANEXO)
 
 Return aItem
+
+/*/{Protheus.doc} fPessoas
+Dados pessoais da guia que a API mascara antes de enviar o texto ao Claude: nomes da tabela origem
+(__CPO_NOMES), matricula do beneficiario (__CPO_MATRIC) e, sem nome do beneficiario na origem, o
+BA1_NOMUSR da matricula. Campo ausente no dicionario e ignorado. Nao vai para o log nem para o e-mail.
+@type function
+@param cAliMov, character, tabela origem, ja posicionada por fPosOrigem()
+@return array, { cNomeOuMatricula, ... }
+/*/
+Static Function fPessoas(cAliMov)
+
+	Local aRet     := {}
+	Local aNomes   := __CPO_NOMES
+	Local aMatric  := __CPO_MATRIC
+	Local aPartes  := {}
+	Local cValor   := ""
+	Local cQuery   := ""
+	Local cAlias   := ""
+	Local cFalta   := ""
+	Local lNomUsr  := .F.
+	Local oErro    := Nil
+	Local nPos     := 0
+	Local nI       := 0
+
+	For nI := 1 To Len(aNomes)
+		nPos := (cAliMov)->(FieldPos(cAliMov + aNomes[nI]))
+		If nPos > 0
+			cValor := AllTrim(cValToChar((cAliMov)->(FieldGet(nPos))))
+			If !Empty(cValor)
+				aAdd(aRet, cValor)
+				lNomUsr := lNomUsr .Or. aNomes[nI] == "_NOMUSR"
+			EndIf
+		EndIf
+	Next nI
+
+	For nI := 1 To Len(aMatric)
+		nPos := (cAliMov)->(FieldPos(cAliMov + aMatric[nI]))
+		If nPos == 0
+			aPartes := {}
+			Exit
+		EndIf
+		aAdd(aPartes, AllTrim(cValToChar((cAliMov)->(FieldGet(nPos)))))
+	Next nI
+
+	cValor := ""
+	aEval(aPartes, {|x| cValor += x})
+	If Len(aPartes) != Len(aMatric) .Or. Len(cValor) < 8 .Or. !fSoDigitos(cValor)
+		Return aRet
+	EndIf
+	aAdd(aRet, cValor)
+
+	If lNomUsr .Or. !fCamposOk("BA1", {"BA1_CODINT", "BA1_CODEMP", "BA1_MATRIC", "BA1_TIPREG", "BA1_DIGITO", "BA1_NOMUSR"}, @cFalta)
+		Return aRet
+	EndIf
+
+	BEGIN SEQUENCE
+		cQuery := "SELECT BA1_NOMUSR FROM " + RetSqlName("BA1") +;
+			" WHERE BA1_FILIAL = '" + xFilial("BA1") + "'" +;
+			" AND BA1_CODINT = '" + fSqlStr(aPartes[1]) + "'" +;
+			" AND BA1_CODEMP = '" + fSqlStr(aPartes[2]) + "'" +;
+			" AND BA1_MATRIC = '" + fSqlStr(aPartes[3]) + "'" +;
+			" AND BA1_TIPREG = '" + fSqlStr(aPartes[4]) + "'" +;
+			" AND BA1_DIGITO = '" + fSqlStr(aPartes[5]) + "'" +;
+			" AND D_E_L_E_T_ = ' '"
+		cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
+		If !(cAlias)->(Eof()) .And. !Empty((cAlias)->BA1_NOMUSR)
+			aAdd(aRet, AllTrim((cAlias)->BA1_NOMUSR))
+		EndIf
+		(cAlias)->(DbCloseArea())
+	RECOVER USING oErro
+		fLog("WARN", "  nome do beneficiario (BA1) nao apurado para o mascaramento: " +;
+			IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
+	END SEQUENCE
+
+Return aRet
 
 /*/{Protheus.doc} fCampoGuia
 @type function
@@ -1442,7 +1710,7 @@ Return .T.
 
 /*/{Protheus.doc} fApiUrl
 @type function
-@return character, URL do POST /extrair-sftp: __URL_PROD quando o ambiente e __ENV_PROD, senao __URL_DEV
+@return character, URL do POST __API_PATH: __URL_PROD quando o ambiente e __ENV_PROD, senao __URL_DEV
 /*/
 Static Function fApiUrl()
 Return IIf(Upper(AllTrim(GetEnvServer())) == __ENV_PROD, __URL_PROD, __URL_DEV) + __API_PATH

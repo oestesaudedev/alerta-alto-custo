@@ -8,6 +8,8 @@ Artefatos para coletar configuração e validar na base Protheus antes das etapa
 | [02-amostra-b71-acb.sql](02-amostra-b71-acb.sql) | Rodar no banco — fluxo B71 → origem → B53 → AC9 → ACB |
 | [03-amostra-br8-ba8.sql](03-amostra-br8-ba8.sql) | Rodar no banco — medicamentos `BR8_ALTCUS` + join BA8 |
 | [04-sx6-z-notienca.md](04-sx6-z-notienca.md) | Cadastro do parâmetro SX6 `Z_NOTIENCA` |
+| [05-campos-valor.sql](05-campos-valor.sql) | Rodar no banco — campos das colunas de valor do e-mail |
+| [06-campos-nomes.sql](06-campos-nomes.sql) | Rodar no banco — campos de nome e matrícula mascarados antes do Claude |
 | [OS_CRIAZNOT.tlpp](OS_CRIAZNOT.tlpp) | Fonte opcional para criar/atualizar `Z_NOTIENCA` via SmartClient |
 
 ## Premissas já fechadas pelos schemas

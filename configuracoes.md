@@ -2,7 +2,7 @@
 
 Este guia lista tudo o que precisa ser configurado para a solução funcionar, e onde cada item fica. São três lugares:
 
-1. `.env` **da API** (`api-extracao-texto/.env`): token da API, credenciais do SFTP e, opcionalmente, a chave da Anthropic (IA).
+1. `.env` **da API** (`api-extracao-texto/.env`): token da API, credenciais do SFTP, se a IA está ligada (`IA_HABILITADA`) e, com ela ligada, a chave da Anthropic.
 2. **Protheus**: parâmetros SX6, constantes do fonte `OS_MEDALTC.tlpp` e o Scheduler.
 3. **Rede**: portas que precisam estar liberadas entre as máquinas.
 
@@ -41,9 +41,9 @@ Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 | `EXTRACAO_CONCORRENCIA` | Não             | `2`                                           | Extrações simultâneas (OCR usa muita CPU e memória). As demais esperam numa fila de até 20; acima disso a API responde "API ocupada" e o job tenta de novo na próxima execução |
 | `EXTRAIR_BASE64`     | Não                | `false`                                       | Habilita o `POST /extrair` (arquivo em Base64), usado só pelos testes (junto com o `POST /verificar`). O job usa o `/verificar-sftp`. Deixe `false` em produção     |
 | `BODY_LIMIT`         | Não                | `25mb`                                        | Tamanho máximo do JSON recebido quando `EXTRAIR_BASE64=true`. Com ele desligado, o limite é `2mb` (nome, ambiente, a lista de medicamentos e os nomes a mascarar) |
-| `IA_HABILITADA`      | **Sim** (`true`)   | `true`                                        | Liga o Claude, que é a verificação dos medicamentos (seção 1.1). Com `false` (padrão do código), a API sobe com aviso no console, mas o `/verificar-sftp` responde "IA indisponivel" e o job não verifica nenhum anexo |
+| `IA_HABILITADA`      | Não                | `false` / `true`                              | Liga o Claude nos anexos (seção 1.1). O job lê o valor pelo `GET /config` a cada execução. `false` (padrão): o alerta sai só pelos procedimentos de alto custo lançados na guia e os anexos não são enviados. `true`: o Claude também confirma os procedimentos nos anexos e acrescenta medicamentos citados que não foram lançados |
 | `IA_PROVEDOR`        | Não                | `anthropic`                                   | Provedor da IA. Hoje só `anthropic`; outro valor impede a subida com `IA_HABILITADA=true`                                          |
-| `ANTHROPIC_API_KEY`  | **Sim**            | `sk-ant-...`                                  | Chave da API da Anthropic. A API não sobe com `IA_HABILITADA=true` e a chave vazia                                                 |
+| `ANTHROPIC_API_KEY`  | Com a IA ligada    | `sk-ant-...`                                  | Chave da API da Anthropic. A API não sobe com `IA_HABILITADA=true` e a chave vazia                                                 |
 | `IA_MODELO`          | Não                | `claude-sonnet-5-5`                           | Modelo do Claude. `claude-haiku-4-5` é mais barato e mais rápido, com menos precisão em nomes comerciais e erros de OCR           |
 | `IA_TIMEOUT_MS`      | Não                | `60000`                                       | Tempo máximo da chamada ao Claude (com 1 nova tentativa em 429/5xx dentro desse tempo). Somado ao OCR, precisa caber no `__API_TIMEOUT` (300 s) do job |
 | `IA_MAX_CHARS`       | Não                | `100000`                                      | Máximo de caracteres do texto do anexo enviados ao Claude. O resto não é lido: a API registra `WARN` e devolve o aviso `texto-cortado`, que o job registra no log |
@@ -63,13 +63,14 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 Depois de alterar o `.env`, reinicie a API para ela ler os valores novos.
 
-### 1.1 IA (Claude): a verificação dos medicamentos
+### 1.1 IA (Claude): confirmação nos anexos (opcional)
 
-A API manda o texto extraído de cada anexo e a lista de medicamentos de alto custo (código, descrição e termos da BR8/BA8, enviada pelo job) ao Claude, que devolve os medicamentos da lista citados: pelo nome do cadastro, nome comercial (ex.: Remicade → infliximabe), princípio ativo, abreviação ou com erro de OCR. Não há mais busca exata: a IA é a única verificação.
+A primeira verificação é sempre a dos procedimentos lançados na guia (seção 2.5), feita pelo job no Protheus. Com a IA ligada, a API manda também o texto extraído de cada anexo e a lista de medicamentos de alto custo (código, descrição e termos da BR8/BA8, enviada pelo job) ao Claude, que devolve os medicamentos da lista citados: pelo nome do cadastro, nome comercial (ex.: Remicade → infliximabe), princípio ativo, abreviação ou com erro de OCR. O job junta os dois resultados: procedimento citado no anexo fica "Procedimento + IA"; procedimento não citado continua no alerta, marcado "nao citado nos anexos" ou "sem anexo para confirmar"; medicamento citado no anexo e não lançado entra como "Anexo (IA)".
 
-- **Configuração só na API**: `IA_HABILITADA=true` + `ANTHROPIC_API_KEY` no `.env`. Não há parâmetro no Protheus.
+- **Configuração só na API**: `IA_HABILITADA` (+ `ANTHROPIC_API_KEY` quando `true`) no `.env`. Não há parâmetro no Protheus: o job pergunta à API pelo `GET /config` no início de cada execução. Se a API não responder, a execução termina sem avançar o `Z_NOTIENCA`. Depois de mudar o valor, reinicie a API.
+- **IA desligada**: os anexos não são baixados nem enviados; o e-mail sai só com os procedimentos e sem as colunas da IA.
 - **Confiança**: achados com confiança alta ou média entram no alerta; os de confiança baixa só vão para o log (`[IA] ... com confianca baixa: fora do alerta`).
-- **Falha da IA para o job**: timeout, chave inválida, `IA_HABILITADA=false` ou API da Anthropic fora fazem a API responder "IA indisponivel: ...". O job trata como falha temporária: não avança o `Z_NOTIENCA` e retoma a B71 na próxima execução.
+- **Falha da IA com ela ligada**: timeout, chave inválida ou API da Anthropic fora fazem a API responder "IA indisponivel: ...". O job trata como falha temporária: não avança o `Z_NOTIENCA` e retoma a B71 na próxima execução.
 - **Dados de saúde**: antes do envio, a API troca por marcadores (`[NOME]`, `[CPF]`, `[CARTEIRINHA]`...):
   - CPF, CNS, carteirinha, telefone, e-mail e data de nascimento (padrões fixos);
   - o nome do beneficiário, o nome do solicitante e a matrícula da guia, que o job envia no campo `mascarar` (campos em `__CPO_NOMES` / `__CPO_MATRIC`, seção 2.2; sem nome na tabela da guia, o job busca o `BA1_NOMUSR` pela matrícula). Cada parte do nome com 3 letras ou mais é mascarada em qualquer lugar do texto, sem acento e tolerando trocas comuns do OCR (I/l/1, O/0, S/5), inclusive em formas abreviadas como "J. C. SILVA";
@@ -143,6 +144,9 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 | `__DATA_DBG`    | `""` (vazio)                     | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio                                                                                                                         |
 | `__CPO_NOMES` / `__CPO_MATRIC` | `{"_NOMUSR", "_NOMSOL"}` / `{"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}` | Sufixos dos campos da tabela de origem da guia (prefixo = alias, ex.: `BEA_NOMUSR`) com os nomes e a matrícula que a API mascara antes de enviar o texto ao Claude. Campo que não existir no dicionário é ignorado |
 | `__API_TIMEOUT` | `300`                            | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS`                                                                                                |
+| `__CFG_PATH`    | `/config`                        | Caminho do `GET` que informa se a IA está ligada na API (mesma URL base do `__API_URL`)                                                                                                                                                                     |
+| `__TIP_BE2` / `__TIP_BQV` | `{1, 2, 3, 4, 5, 7}` / `11` | `B53_TIPGUI` cujos itens ficam na BE2; `11` com `B53_ALIMOV = B4Q` usa a BQV; os demais, a B4C (seção 2.5)                                                                                                                                           |
+| `__NUMGUI_PT`   | `{4, 4, 2, 8}`                   | Partes do `B53_NUMGUI` (OPEMOV + ANOAUT + MESAUT + NUMAUT) usadas como chave dos itens da guia                                                                                                                                                              |
 
 
 
@@ -177,7 +181,22 @@ O job envia pelo SMTP padrão do Protheus, lendo os parâmetros SX6 abaixo (os m
 | `MV_RELFROM` | C    | `protheus@empresa.com.br` | Remetente. Vazio: usa `MV_RELACNT`                                |
 
 
-O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum medicamento de alto custo foi encontrado. A coluna "Observação IA" traz a confiança e o motivo dados pelo Claude (ex.: "IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
+O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum item de alto custo foi encontrado. A coluna "Detecção" diz de onde veio o item (Procedimento, Procedimento + IA ou Anexo (IA)); "Qtd" e "Valor na guia" vêm dos itens da guia. Com a IA ligada, a coluna "Observação IA" traz a confirmação, a confiança e o motivo dados pelo Claude (ex.: "confirmado pela IA: IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
+
+### 2.5 Procedimentos da guia (camada antes da IA)
+
+Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mais recente, se houver mais de uma) e escolhe a tabela de itens pelo tipo da guia:
+
+| `B53_TIPGUI` | Itens (cabeçalho) | Chave dos itens = `B53_NUMGUI` | Quantidade / valor unitário |
+| --- | --- | --- | --- |
+| `1`, `2`, `3`, `4`, `5`, `7` | `BE2` (`BEA`) | `BE2_OPEMOV + BE2_ANOAUT + BE2_MESAUT + BE2_NUMAUT` | `BE2_QTDSOL` / `BE2_VLRAPR` |
+| `11` com `B53_ALIMOV = B4Q` | `BQV` (`B4Q`) | `BQV_CODOPE + BQV_ANOINT + BQV_MESINT + BQV_NUMINT` | `BQV_QTDSOL` / `BQV_VLRAPR` |
+| demais | `B4C` (`B4A`) | `B4C_OPEMOV + B4C_ANOAUT + B4C_MESAUT + B4C_NUMAUT` | `B4C_QTDSOL` / `B4C_VLRUNT` |
+
+- Um item é de alto custo quando o `CODPAD + CODPRO` dele tem `BR8_ALTCUS = '1'` na BR8.
+- Valor na guia = soma de quantidade solicitada × valor unitário dos itens com o mesmo código (quantidade zerada conta como 1).
+- `B53_TIPGUI` não existe no dicionário padrão da B53. Sem ele (ou sem `B53_ALIMOV`), o job registra `CAMPO_B53_INEXISTENTE` e não avança o `Z_NOTIENCA`. Confira com `levantamento/07-b53-tipgui-itens.sql`.
+- Guia sem B53: nada a verificar, a B71 é concluída. Tabela ou campo de itens ausente no dicionário: `ERROR` no log e a B71 segue sem procedimentos. Erro na consulta dos itens: falha temporária (não avança).
 
 ---
 
@@ -188,10 +207,10 @@ O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **
 
 | Origem                                | Destino                            | Porta                 | Para quê                         |
 | ------------------------------------- | ---------------------------------- | --------------------- | -------------------------------- |
-| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `POST /verificar-sftp` |
-| AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `POST /verificar-sftp` |
-| Máquina da API                        | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos            |
-| Máquina da API                        | `api.anthropic.com`                | `443` (HTTPS)         | A API chama o Claude             |
+| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `GET /config` e `POST /verificar-sftp` |
+| AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `GET /config` e `POST /verificar-sftp` |
+| Máquina da API                        | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos (só com a IA ligada) |
+| Máquina da API                        | `api.anthropic.com`                | `443` (HTTPS)         | A API chama o Claude (só com a IA ligada) |
 
 
 - Fora do `CYWSXT_PROD` o job usa `localhost:3010`, então a API precisa estar na **mesma máquina** do AppServer desse ambiente.
@@ -204,15 +223,16 @@ O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **
 
 ## 4. Checklist rápido
 
-- [ ] `api-extracao-texto/.env` criado com `API_TOKEN` (32+ caracteres), `SFTP_DIR`, as `SFTP_PROD_*` (produção) ou `SFTP_DEV_*` (dev), incluindo o `*_HOSTKEY`, e `IA_HABILITADA=true` + `ANTHROPIC_API_KEY`
-- [ ] Saída 443 da máquina da API para `api.anthropic.com`
+- [ ] `api-extracao-texto/.env` criado com `API_TOKEN` (32+ caracteres), `SFTP_DIR`, as `SFTP_PROD_*` (produção) ou `SFTP_DEV_*` (dev), incluindo o `*_HOSTKEY`, e `IA_HABILITADA` decidido (`true` exige `ANTHROPIC_API_KEY`)
+- [ ] Com a IA ligada: saída 443 da máquina da API para `api.anthropic.com`
+- [ ] `B53_TIPGUI` e os campos dos itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
 - [ ] API no ar (Docker ou pm2) e respondendo em `http://localhost:3010` (dev) ou `http://10.1.5.14:6177` (produção)
 - [ ] Teste da API: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (todos os testes OK)
 - [ ] SX6 `Z_NOTIENCA` cadastrado
 - [ ] SX6 `Z_MEDAPIT` cadastrado com o mesmo valor do `API_TOKEN`
-- [ ] `U_chkMEDALTC("arquivo.pdf")` com `[OK] Verificacao de arquivo.pdf (extracao + IA)`
+- [ ] `U_chkMEDALTC` com `[OK] Flag da IA` mostrando o estado esperado; com a IA ligada, `U_chkMEDALTC("arquivo.pdf")` com `[OK] Verificacao de arquivo.pdf (extracao + IA)`
 - [ ] Parâmetros SMTP `MV_REL*` conferidos (seção 2.4)
-- [ ] Campos de valor do e-mail conferidos com `levantamento/05-campos-valor.sql` (BD4 e itens da guia em `fCfgItens()`); campo ausente só deixa a coluna como `n/d`
+- [ ] Valor de tabela conferido com `levantamento/05-campos-valor.sql` (BD4); campo ausente só deixa a coluna como `n/d`
 - [ ] AppServer alcançando a API: `localhost:3010` fora da produção, `10.1.5.14:6177` no `CYWSXT_PROD` (a linha `Config: ambiente ... | API ...` do log mostra a URL escolhida)
 - [ ] `OS_MEDALTC.tlpp` compilado no RPO
 - [ ] `U_chkMEDALTC` com todas as verificações `[OK]` (roteiro em `teste-integrado/README.md`)

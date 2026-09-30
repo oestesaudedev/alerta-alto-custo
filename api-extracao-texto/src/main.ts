@@ -41,7 +41,10 @@ async function bootstrap() {
       (base64 ? ' (POST /extrair e /verificar habilitados: só para testes)' : ''),
   );
   if (!iaHabilitada(config.get('IA_HABILITADA'))) {
-    console.warn('IA_HABILITADA não está ligada: o /verificar-sftp responde "IA indisponivel" e nenhum anexo é verificado');
+    console.warn(
+      'IA_HABILITADA não está ligada: o GET /config informa ia=false e o job alerta só pelos procedimentos da guia' +
+        ' (o /verificar-sftp responde "IA indisponivel")',
+    );
   }
 }
 

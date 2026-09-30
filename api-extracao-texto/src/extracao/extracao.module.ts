@@ -13,12 +13,13 @@ import { MOTOR_OCR } from './ocr/motor-ocr';
 import { TesseractOcr } from './ocr/tesseract.ocr';
 import { PastaTemporaria } from './pasta-temporaria';
 import { SftpService } from './sftp.service';
+import { ConfigController } from './verificacao/config.controller';
 import { VerificacaoController } from './verificacao/verificacao.controller';
 import { VerificacaoService } from './verificacao/verificacao.service';
 import { ApiTokenGuard } from '../auth/api-token.guard';
 
 @Module({
-  controllers: [ExtracaoController, VerificacaoController],
+  controllers: [ExtracaoController, VerificacaoController, ConfigController],
   providers: [
     ExtracaoService,
     VerificacaoService,

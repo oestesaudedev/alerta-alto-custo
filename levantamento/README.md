@@ -10,6 +10,7 @@ Artefatos para coletar configuração e validar na base Protheus antes das etapa
 | [04-sx6-z-notienca.md](04-sx6-z-notienca.md) | Cadastro do parâmetro SX6 `Z_NOTIENCA` |
 | [05-campos-valor.sql](05-campos-valor.sql) | Rodar no banco — campos das colunas de valor do e-mail |
 | [06-campos-nomes.sql](06-campos-nomes.sql) | Rodar no banco — campos de nome e matrícula mascarados antes do Claude |
+| [07-b53-tipgui-itens.sql](07-b53-tipgui-itens.sql) | Rodar no banco — `B53_TIPGUI` / `B53_ALIMOV`, tabela de itens (BE2, BQV, B4C) e chave pelo `B53_NUMGUI` da camada de procedimentos |
 | [OS_CRIAZNOT.tlpp](OS_CRIAZNOT.tlpp) | Fonte opcional para criar/atualizar `Z_NOTIENCA` via SmartClient |
 
 ## Premissas já fechadas pelos schemas

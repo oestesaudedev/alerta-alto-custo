@@ -92,7 +92,25 @@ Não usa o `UNION ALL` com `INNER JOIN`: ele só traria B71 com anexo, e o water
 | 10 | Teste integrado | Pasta [`teste-integrado/`](teste-integrado/): roteiro, `U_chkMEDALTC` (diagnóstico sem gravar), `U_tstMEDALTC` (2 execuções + conferência do watermark), `conferencia.sql` | Artefatos prontos — executar no Protheus de teste | 4, 9 |
 | 11 | Implantação | Pasta [`implantacao/`](implantacao/): roteiro (API em produção, RPO, SX6, Scheduler 15 min, monitoramento, rollback) e `monitoramento.sql`. URL da API por ambiente no fonte (`CYWSXT_PROD` → `10.1.5.14:6177`); pm2 sem `API_TOKEN` | Artefatos prontos — executar após a etapa 10 aprovada | 10 |
 
+| 12 | Camada de procedimentos antes da IA | Procedimentos de alto custo da guia (BE2/BQV/B4C por `B53_TIPGUI`) e IA opcional via `IA_HABILITADA` (`GET /config`). Plano em [`planejamentos/camada-procedimentos-antes-da-ia.md`](planejamentos/camada-procedimentos-antes-da-ia.md) | Implementada — validar `B53_TIPGUI` com `levantamento/07-b53-tipgui-itens.sql` e repetir o teste integrado com IA ligada e desligada | 10 |
+
 As etapas 2-4 e 7 (API) e 5-6 (TLPP) podem andar em paralelo. As duas frentes se juntam na etapa 8.
+
+### Etapa 12 — camada de procedimentos antes da IA
+
+Para cada B71, depois de resolver a guia, o job lê a B53 (`B53_TIPGUI`, `B53_ALIMOV`) e verifica os procedimentos lançados na guia antes de qualquer chamada à IA:
+
+| `B53_TIPGUI` | Itens | Chave (= `B53_NUMGUI`) | Qtd / valor unitário |
+|---|---|---|---|
+| 1, 2, 3, 4, 5, 7 | BE2 | `OPEMOV + ANOAUT + MESAUT + NUMAUT` | `BE2_QTDSOL` / `BE2_VLRAPR` |
+| 11 com `B53_ALIMOV = B4Q` | BQV | `CODOPE + ANOINT + MESINT + NUMINT` | `BQV_QTDSOL` / `BQV_VLRAPR` |
+| demais | B4C | `OPEMOV + ANOAUT + MESAUT + NUMAUT` | `B4C_QTDSOL` / `B4C_VLRUNT` |
+
+- Item de alto custo: `BR8_ALTCUS = '1'` no `CODPAD + CODPRO` (`fProcAltoCusto`).
+- IA desligada (`GET /config` → `ia: false`): e-mail só com os procedimentos; anexos não são enviados.
+- IA ligada: o `/verificar-sftp` roda nos anexos como antes e `fMescla` junta os resultados — procedimento confirmado ("Procedimento + IA"), não confirmado ("nao citado nos anexos" / "sem anexo para confirmar") e medicamento só no anexo ("Anexo (IA)").
+- Substitui `fValorGuia` / `fCfgItens`, que usavam campos inexistentes na BQV (`BQV_OPEMOV`...) e na B4C (`B4C_VLRAPR`).
+- `B53_TIPGUI` não é campo padrão; sem ele a B71 fica `CAMPO_B53_INEXISTENTE` e o watermark não avança.
 
 ## Parte 1: Fonte TLPP `totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp`
 
@@ -120,7 +138,7 @@ O filtro de medicamentos **não** usa mais `__TAB_MEDIC` / `BR8_CODPAD` como cri
   3. Se achar medicamento: `fEnviaEmail()` — **um e-mail por B71**, com todos os anexos e medicamentos dela. Envio por `TMailManager`/`TMailMessage` com o SMTP padrão do Protheus (`MV_RELSERV`, `MV_RELACNT`, `MV_RELPSW`, `MV_RELAUTH`, `MV_RELSSL`, `MV_RELTLS`, `MV_RELFROM`). Assunto: `[Alto custo] Guia <guia> - <n> medicamento(s) identificado(s)`. Corpo HTML: guia (`B53_NUMGUI`), origem (`B71_ALIMOV` + recno), recno da B71 e tabela com código, descrição BR8, **valor de tabela**, **valor na guia**, termo encontrado e anexo. **Não** inclui trecho do texto do anexo (dados de saúde).
      - Alto custo: só `BR8_ALTCUS = '1'`. O valor não entra na decisão.
      - Valor de tabela (`fCarregaVlrTab`): BR8 → BA8 → **BD4** (`BA8_CODTAB + BA8_CDPADP + BA8_CODPRO = BD4_CODTAB + BD4_CDPADP + BD4_CODPRO`, confirmado no dicionário), campo `BD4_VALREF`. Sempre a **vigência mais recente**: para cada tabela + unidade (`BD4_CODIGO`), o maior `BD4_VIGINI <= hoje`; `BD4_VIGFIM` não é considerado e vigências futuras ficam de fora. Mais de uma tabela/unidade: listadas com " / ". Sem valor: `sem valor na tabela`.
-     - Valor na guia (`fValorGuia` + `fCfgItens`): soma do campo de valor dos itens da guia de origem (BEA→BE2, BE4→BEJ, B44→B45, B4Q→BQV, B4A→B4C) com o mesmo `CODPAD`+`CODPRO`. Medicamento só no anexo: `nao consta`.
+     - Valor na guia: desde a etapa 12, vem dos procedimentos da guia (`fProcAltoCusto`, tabela de itens por `B53_TIPGUI`): quantidade solicitada × valor unitário. Medicamento só no anexo: `nao consta`.
      - Tabela ou campo ausente no dicionário, ou erro na query: a coluna sai `n/d` e o job segue (não bloqueia o watermark). Confirmar os nomes com [`levantamento/05-campos-valor.sql`](levantamento/05-campos-valor.sql).
   4. Após a B71 verificada com sucesso: gravar `Z_NOTIENCA` com aquele `R_E_C_N_O_` (`PutMV`). Falha no SMTP conta como falha temporária: não avança e a B71 é retomada (o e-mail é tentado de novo).
   - `CAMPO_GUIA_INEXISTENTE` (erro de dicionário) também não avança: o job para nessa B71 até o mapeamento ser corrigido.

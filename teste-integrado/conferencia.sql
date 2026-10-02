@@ -31,14 +31,17 @@ ORDER BY B71.R_E_C_N_O_;
 --    Para reprocessar a B71 escolhida: Z_NOTIENCA = B71_RECNO - 1 (SX6 ou U_tstMEDALTC("<valor>")).
 
 -- 4) Medicamentos que o job procura e os termos mais provaveis de casar no texto
-SELECT BR8.BR8_CODPSA, BR8.BR8_DESCRI, BA8.BA8_DPRINC, BA8.BA8_DESCRI
+--    Mesmo filtro de fCarregaMed(): BR8_CODPAD em __CODPAD_BR8; item sem BA8 entra so com a BR8_DESCRI
+SELECT DISTINCT BR8.BR8_CODPAD, BR8.BR8_CODPSA, BR8.BR8_DESCRI,
+       COALESCE(BA8.BA8_DPRINC, ' ') AS BA8_DPRINC, COALESCE(BA8.BA8_DESCRI, ' ') AS BA8_DESCRI
 FROM BR8010 BR8
-INNER JOIN BA8010 BA8
+LEFT JOIN BA8010 BA8
     ON BA8.BA8_CDPADP = BR8.BR8_CODPAD
    AND BA8.BA8_CODPRO = BR8.BR8_CODPSA
    AND BA8.D_E_L_E_T_ = ' '
 WHERE BR8.D_E_L_E_T_ = ' '
   AND BR8.BR8_ALTCUS = '1'
+  AND BR8.BR8_CODPAD IN ('00', '20', '18')
 ORDER BY BR8.BR8_CODPSA;
 
 -- Oracle/Postgres: trocar TOP 1, CAST(... AS INT) e o '+' de concatenacao pela sintaxe do SGBD.

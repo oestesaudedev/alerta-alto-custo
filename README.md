@@ -15,7 +15,7 @@ O ADVPL/TLPP não lê PDF nem faz OCR, e o `FTPConnect` não fala SFTP. Por isso
 Scheduler (15 min) → U_OSMEDALTC
   1. Lê Z_NOTIENCA (último R_E_C_N_O_ da B71 já verificado)
   2. GET /config na API: IA ligada ou não (IA_HABILITADA no .env da API)
-  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1', BR8_CODPAD 00 ou 20) INNER JOIN BA8 + valor de tabela (BD4)
+  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1', BR8_CODPAD em __CODPAD_BR8) LEFT JOIN BA8 + valor de tabela (BD4)
   4. B71 novas: R_E_C_N_O_ > Z_NOTIENCA, B71_DATMOV = hoje, B71_CODDEP = '012'
   5. Para cada B71:
        B71_ALIMOV + B71_RECMOV → tabela origem (BEA | BE4 | B44 | B4Q | B4A) → número da guia

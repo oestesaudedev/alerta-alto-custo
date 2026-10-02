@@ -115,7 +115,8 @@ Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e m
 ```
 
 - `medicamentos` é obrigatório e não pode ser vazio (HTTP 400); até 5000 itens, com `descricao` e cada termo de até 1000 caracteres. `mascarar` é opcional (até 20 nomes).
-- Classificação ([`classificacao-ia.ts`](src/extracao/verificacao/classificacao-ia.ts)): confiança `alta` ou `media` vira achado (origem `ia`); `baixa` vira aviso `confianca-baixa`. Texto maior que `IA_MAX_CHARS` gera o aviso `texto-cortado` (código vazio).
+- Só medicamento pedido de forma explícita para o paciente (contexto `solicitado`: "solicito", "prescrevo", receita com posologia, pedido de autorização) chega à classificação. Menções `informativo` (folheto, bula, termo de consentimento, lista de reações adversas), `historico` ("paciente em uso de", uso contínuo, uso anterior, suspenso, alergia; estar em uso não é pedido de cobertura) e `outro` são descartadas na API, sem aviso; o log da API mostra só a contagem.
+- Classificação ([`classificacao-ia.ts`](src/extracao/verificacao/classificacao-ia.ts)): confiança `alta` ou `media` vira achado (origem `ia`); `baixa` vira aviso `confianca-baixa`. A confiança mede só a identificação do nome (exato, nome comercial, erro de OCR). Texto maior que `IA_MAX_CHARS` gera o aviso `texto-cortado` (código vazio).
 - Falha da IA (timeout, chave inválida, `IA_HABILITADA=false`): `{ "ok": false, "erro": "IA indisponivel: ..." }`. O job trata como falha temporária e retoma a B71 na próxima execução (com a IA desligada ele nem chama este endpoint; o erro só aparece se o flag mudar no meio de uma execução).
 - Erros da extração iguais aos do `/extrair-sftp` (`{ ok: false, erro }`), antes de chamar a IA.
 - Campos que não existem mais (`ia`, `retornarTexto`, do fonte intermediário do job) são recusados com HTTP 400.
@@ -160,7 +161,7 @@ Com a lista e a extração OK, a resposta ganha o campo `ia`:
 {
   "ok": true, "texto": "...", "metodo": "pdf-parse",
   "ia": { "ok": true, "modelo": "claude-sonnet-5-5", "achados": [
-    { "codigo": "90000001", "termo": "REMICADE", "confianca": "media", "motivo": "nome comercial de infliximabe" }
+    { "codigo": "90000001", "termo": "REMICADE", "contexto": "solicitado", "confianca": "media", "motivo": "prescrito na receita, nome comercial de infliximabe" }
   ] }
 }
 ```
@@ -171,10 +172,10 @@ Com a lista e a extração OK, a resposta ganha o campo `ia`:
   - os nomes e a matrícula do campo opcional `mascarar` (o job envia beneficiário, solicitante e matrícula da guia): cada parte do nome com 3+ letras, sem acento e tolerando I/l/1, O/0, S/5 do OCR;
   - o que vem depois de rótulos no início da linha ou coluna ("Paciente:", "Beneficiário:", "Nome da mãe:", "Médico solicitante:").
 
-  Palavras dos medicamentos da lista nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados, corte em `IA_MAX_CHARS` e falha do provedor; o `test:verificacao` confere a classificação dos achados e a falha da IA virando erro.
-- A lista de medicamentos vai no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo, e códigos fora da lista são descartados.
+  Palavras dos medicamentos da lista nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados (inclusive o descarte do que não é `solicitado`), corte em `IA_MAX_CHARS` e falha do provedor; o `test:verificacao` confere a classificação dos achados e a falha da IA virando erro.
+- A lista de medicamentos vai no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo (`codigo`, `termo`, `contexto`, `confianca`, `motivo`), e códigos fora da lista ou com contexto diferente de `solicitado` são descartados.
 - A chamada ao Claude roda fora da fila de OCR (`EXTRACAO_CONCORRENCIA`).
-- O log registra modelo, quantidade de achados, tempo e tokens (sem texto do anexo).
+- O log registra modelo, quantidade de achados e de não solicitados, tempo e tokens (sem texto do anexo).
 
 ## Código
 

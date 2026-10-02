@@ -21,7 +21,9 @@
 #DEFINE __CFG_PATH   "/config"
 #DEFINE __API_TOKEN  SuperGetMV("Z_MEDAPIT", .F., "")
 
-#DEFINE __CODDEP     "012"
+// Departamentos (B71_CODDEP) verificados; {} = todos
+//#DEFINE __CODDEP     {"012"}
+#DEFINE __CODDEP     {}
 #DEFINE __CODOBJ     ""
 
 // Debug: B71_DATMOV fixo (AAAAMMDD) no lugar da data de hoje. Deixar "" em producao
@@ -46,14 +48,17 @@
 #DEFINE __I_TEXTOS   7
 #DEFINE __I_DATMOV   8
 #DEFINE __I_PESSOAS  9
-#DEFINE __I_TIPGUI   10
-#DEFINE __I_B53ALI   11
-#DEFINE __I_B53GUI   12
+#DEFINE __I_TIPO     10
+#DEFINE __I_B53GUI   11
+#DEFINE __I_CHVBEA   12
 #DEFINE __I_TAM      12
 
-// Campos da B53 que escolhem a tabela de itens da guia (fCfgProc)
-#DEFINE __CPO_B53    {"B53_TIPGUI", "B53_ALIMOV"}
-// B53_TIPGUI cujos itens ficam na BE2 (cabecalho BEA); 11 com B53_ALIMOV = B4Q usa a BQV; os demais, a B4C
+// Chave da BEA (= indice 1 da BE2 e formato do B53_NUMGUI), lida no registro do B71_RECMOV
+#DEFINE __CPO_CHVBEA {"BEA_OPEMOV", "BEA_ANOAUT", "BEA_MESAUT", "BEA_NUMAUT"}
+
+// Campo da B53 que, com o B71_ALIMOV, escolhe a tabela de itens da guia (fCfgProc)
+#DEFINE __CPO_B53    {"B53_TIPO"}
+// B53_TIPO cujos itens ficam na BE2 (cabecalho BEA); 11 com B71_ALIMOV = B4Q usa a BQV; os demais, a B4C
 #DEFINE __TIP_BE2    {1, 2, 3, 4, 5, 7}
 #DEFINE __TIP_BQV    11
 // B53_NUMGUI = OPEMOV + ANOAUT + MESAUT + NUMAUT: tamanho de cada parte, na ordem da chave dos itens
@@ -107,6 +112,9 @@
 // Termos com menos letras que isso nao vao para a IA (a descricao da BR8 sempre vai)
 #DEFINE __MIN_TERMO  4
 
+// Tabelas padrao (BR8_CODPAD) consideradas no alto custo
+#DEFINE __CODPAD_BR8 {"00", "20", "18"}
+
 // Posicoes de cada item de alto custo do alerta (fProcAltoCusto, fBuscaMed, fMescla)
 #DEFINE __F_CODPSA   1
 #DEFINE __F_DESCRI   2
@@ -145,16 +153,17 @@
 #DEFINE __ST_ALIAS     "ALIAS_DESCONHECIDO"
 #DEFINE __ST_CAMPO     "CAMPO_GUIA_INEXISTENTE"
 #DEFINE __ST_SEMB53    "SEM_B53"
-#DEFINE __ST_TIPGUI    "CAMPO_B53_INEXISTENTE"
+#DEFINE __ST_CPOB53    "CAMPO_B53_INEXISTENTE"
 
 /*/{Protheus.doc} OSMEDALTC
 Job de deteccao de itens de alto custo em guias (procedimentos lancados e anexos).
 
-Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP = __CODDEP)
-  -> tabela origem (BEA | BE4 | B44 | B4Q | B4A) -> numero da guia -> B53 (B53_TIPGUI, B53_ALIMOV)
-  -> 1. procedimentos lancados na guia, pela chave do B53_NUMGUI (fCfgProc):
-        B53_TIPGUI 1, 2, 3, 4, 5, 7 -> BE2; 11 com B53_ALIMOV = B4Q -> BQV; demais -> B4C
-        item com BR8_ALTCUS = '1' no CODPAD + CODPRO e procedimento de alto custo
+Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP em __CODDEP; {} = todos)
+  -> tabela origem (BEA | BE4 | B44 | B4Q | B4A) -> numero da guia -> B53 (B53_TIPO)
+     (B71 da BEA com BEA_GUIORI vazio: guia = chave da propria BEA, OPEMOV + ANOAUT + MESAUT + NUMAUT)
+  -> 1. procedimentos lancados na guia, pela chave do B53_NUMGUI (fCfgProc; BE2 de B71 da BEA: chave da BEA):
+        B53_TIPO 1, 2, 3, 4, 5, 7 -> BE2; 11 com B71_ALIMOV = B4Q -> BQV; demais -> B4C
+        item com BR8_ALTCUS = '1' no CODPAD + CODPRO (CODPAD em __CODPAD_BR8) e procedimento de alto custo
   -> 2. so com a IA ligada (IA_HABILITADA no .env da API, lido por GET __CFG_PATH a cada execucao):
         AC9 -> ACB -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 e os nomes da guia a
         mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da lista
@@ -179,7 +188,7 @@ Parametros SX6:
 
 Z_NOTIENCA avanca apos cada B71 concluida (com ou sem anexo/medicamento/e-mail). Falha de API
 (inclusive o GET __CFG_PATH), SFTP, SMTP ou da consulta dos itens interrompe a execucao sem avancar, e a
-B71 e retomada na proxima rodada. B53_TIPGUI/B53_ALIMOV ausentes no dicionario tambem bloqueiam.
+B71 e retomada na proxima rodada. B53_TIPO ausente no dicionario tambem bloqueia.
 
 Agendamento (Scheduler / CFGX032):
   Rotina....: U_OSMEDALTC
@@ -330,7 +339,7 @@ Return cData
 
 /*/{Protheus.doc} chkMEDALTC
 Diagnostico do teste integrado: confere cada peca sem gravar Z_NOTIENCA e sem enviar e-mail
-(configuracao, watermark, flag da IA, medicamentos, B71 da janela com B53_TIPGUI, tabela de itens e
+(configuracao, watermark, flag da IA, medicamentos, B71 da janela com B53_TIPO, tabela de itens e
 procedimentos de alto custo, API + token + SFTP e conexao SMTP).
 Com cArquivo (um ACB_OBJETO real) e a IA ligada, verifica o anexo na API (extracao + IA) e lista os
 medicamentos que entrariam no alerta e os avisos. Sem cArquivo ou com a IA desligada, a IA nao e chamada.
@@ -390,16 +399,13 @@ Static Function fDiagnostico(cArquivo)
 	Local aItem    := {}
 	Local aAchados := {}
 	Local aMedApi  := {}
-	Local aProc    := {}
 	Local oServer  := Nil
 	Local lCfg     := .F.
 	Local lIa      := .F.
 	Local lProcOk  := .T.
 	Local cModelo  := ""
 	Local cErro    := ""
-	Local cLista   := ""
 	Local nI       := 0
-	Local nP       := 0
 
 	lOk := fChk("Token Z_MEDAPIT", fValidaCfg(), "") .And. lOk
 
@@ -412,7 +418,7 @@ Static Function fDiagnostico(cArquivo)
 			"IA desabilitada: alerta so pelos procedimentos da guia"))) .And. lOk
 
 	aMed := fCarregaMed()
-	lOk := fChk("Medicamentos de alto custo (BR8_ALTCUS = '1' com BA8)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
+	lOk := fChk("Medicamentos de alto custo (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", com BA8)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
 	For nI := 1 To Min(Len(aMed), 5)
 		fLog("INFO", "  " + aMed[nI][__M_CODPSA] + " " + aMed[nI][__M_DESCRI] + " | " + cValToChar(Len(aMed[nI][__M_TERMOS])) +;
 			" termo(s) | valor de tabela: " + aMed[nI][__M_VLRTAB])
@@ -422,25 +428,17 @@ Static Function fDiagnostico(cArquivo)
 		aB71 := fConsulta(nUltimo)
 		For nI := 1 To Len(aB71)
 			fLogB71(aB71[nI])
-			If aB71[nI][__I_STATUS] == __ST_CAMPO .Or. aB71[nI][__I_STATUS] == __ST_TIPGUI
+			If aB71[nI][__I_STATUS] == __ST_CAMPO .Or. aB71[nI][__I_STATUS] == __ST_CPOB53
 				nCampo++
 			EndIf
 			If aB71[nI][__I_STATUS] == __ST_OK .Or. aB71[nI][__I_STATUS] == __ST_SEMANEXO
-				aProc  := fProcAltoCusto(aB71[nI], aMed, @lProcOk)
-				cLista := ""
-				For nP := 1 To Len(aProc)
-					cLista += IIf(nP > 1, ", ", "") + aProc[nP][__F_CODPSA] + " " + aProc[nP][__F_DESCRI] +;
-						" (qtd " + aProc[nP][__F_QTD] + ", " + aProc[nP][__F_VLRGUI] + ")"
-				Next nP
-				If !Empty(cLista)
-					fLog("INFO", "  procedimentos de alto custo: " + cLista)
-				EndIf
+				fProcAltoCusto(aB71[nI], aMed, @lProcOk)
 				If !lProcOk
 					nCampo++
 				EndIf
 			EndIf
 		Next nI
-		lOk := fChk("B71 na janela (R_E_C_N_O_ > " + cValToChar(nUltimo) + ", DATMOV = " + fDataMov() + ", CODDEP = " + __CODDEP + ")",;
+		lOk := fChk("B71 na janela (R_E_C_N_O_ > " + cValToChar(nUltimo) + ", DATMOV = " + fDataMov() + ", CODDEP = " + fDepTxt() + ")",;
 			nCampo == 0, cValToChar(Len(aB71)) + " registro(s)" +;
 			IIf(nCampo > 0, "; " + cValToChar(nCampo) + " com campo inexistente ou erro na consulta dos itens (bloqueia o watermark)", "")) .And. lOk
 	EndIf
@@ -534,7 +532,7 @@ Static Function fProcessa(aRes, cData)
 		"IA desabilitada (IA_HABILITADA na API): alerta so pelos procedimentos da guia, anexos nao sao enviados"))
 
 	aMed := fCarregaMed()
-	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (BR8_ALTCUS = '1' com BA8)")
+	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", com BA8)")
 	If Len(aMed) == 0
 		fLog("WARN", "Nenhum medicamento de alto custo na BR8/BA8; nada a comparar. Encerrando sem avancar " + __PAR_WATER + ".")
 		Return
@@ -546,7 +544,7 @@ Static Function fProcessa(aRes, cData)
 
 	fLog("INFO", "Watermark " + __PAR_WATER + " = " + cValToChar(nUltimo) +;
 		"; buscando B71 com R_E_C_N_O_ > " + cValToChar(nUltimo) +;
-		", CODDEP = " + __CODDEP + ", DATMOV = " + fDataMov(cData))
+		", CODDEP = " + fDepTxt() + ", DATMOV = " + fDataMov(cData))
 
 	fAvisaAtrasadas(nUltimo, cData)
 
@@ -594,10 +592,11 @@ Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
 	Local aIa      := {}
 	Local aAchados := {}
 	Local cLista   := ""
+	Local cIte     := ""
 	Local lOk      := .T.
 	Local nI       := 0
 
-	If aItem[__I_STATUS] == __ST_CAMPO .Or. aItem[__I_STATUS] == __ST_TIPGUI
+	If aItem[__I_STATUS] == __ST_CAMPO .Or. aItem[__I_STATUS] == __ST_CPOB53
 		Return .F.
 	EndIf
 
@@ -623,8 +622,10 @@ Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
 		Return .T.
 	EndIf
 
+	cIte := fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS]
 	For nI := 1 To Len(aAchados)
 		cLista += IIf(nI > 1, ", ", "") + aAchados[nI][__F_CODPSA] + " (" + aAchados[nI][__F_ORIGEM] +;
+			IIf(aAchados[nI][__F_ORIGEM] == __O_IA, "", " " + cIte) +;
 			IIf(Empty(aAchados[nI][__F_OBJETO]), "", " em " + aAchados[nI][__F_OBJETO]) + ")"
 	Next nI
 	fLog("INFO", "  " + cValToChar(Len(aAchados)) + " item(ns) de alto custo: " + cLista)
@@ -907,8 +908,8 @@ Static Function fCorpoEmail(aItem, aAchados, lIa)
 
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
 	cHtml += "<tr><td><b>Guia</b></td><td>" + fHtml(aItem[__I_NUMGUI]) + "</td></tr>"
-	cHtml += "<tr><td><b>Tipo da guia (B53)</b></td><td>" + fHtml(aItem[__I_TIPGUI]) + " - " + fHtml(aItem[__I_B53ALI]) +;
-		" (itens " + fCfgProc(aItem[__I_TIPGUI], aItem[__I_B53ALI])[__C_ALIAS] + ")</td></tr>"
+	cHtml += "<tr><td><b>Tipo da guia (B53)</b></td><td>" + fHtml(aItem[__I_TIPO]) +;
+		" (itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")</td></tr>"
 	cHtml += "<tr><td><b>Origem</b></td><td>" + fHtml(aItem[__I_ALIMOV]) + " (recno " + fHtml(aItem[__I_RECMOV]) + ")</td></tr>"
 	cHtml += "<tr><td><b>Movimenta&ccedil;&atilde;o B71</b></td><td>" + cValToChar(aItem[__I_RECNO]) + " - " + DToC(SToD(aItem[__I_DATMOV])) + "</td></tr>"
 	cHtml += "</table>"
@@ -934,7 +935,7 @@ Static Function fCorpoEmail(aItem, aAchados, lIa)
 		cHtml += "</tr>"
 	Next nI
 	cHtml += "</table>"
-	cHtml += '<p style="font-size:11px;color:#555">Procedimento: item lan&ccedil;ado na guia com BR8_ALTCUS = 1.' +;
+	cHtml += '<p style="font-size:11px;color:#555">Procedimento: item lan&ccedil;ado na guia com BR8_ALTCUS = 1 (tabela ' + fCodPadTxt() + ').' +;
 		" Qtd e valor na guia: soma de quantidade solicitada x valor unit&aacute;rio dos itens da guia com o mesmo c&oacute;digo." +;
 		" Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; " + DToC(Date()) + ". &quot;" + __VLR_ND +;
 		"&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
@@ -1205,7 +1206,7 @@ Static Function fDecUtf8(xTexto)
 Return IIf(ValType(xDec) == "C", xDec, cTexto)
 
 /*/{Protheus.doc} fCarregaMed
-Carrega os medicamentos de alto custo: BR8 INNER JOIN BA8, BR8_ALTCUS = '1'.
+Carrega os medicamentos de alto custo: BR8 INNER JOIN BA8, BR8_ALTCUS = '1' e BR8_CODPAD em __CODPAD_BR8.
 Itens so na BR8, sem BA8, ficam de fora.
 @type function
 @return array, { {cCodPsa, cDescri, aTermos, cCodPad, cVlrTab}, ... }. aTermos tem as descricoes
@@ -1229,6 +1230,7 @@ Static Function fCarregaMed()
 		" AND BA8.D_E_L_E_T_ = ' '" +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
 		" AND BR8.BR8_ALTCUS = '1'" +;
+		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA"
 
@@ -1315,6 +1317,7 @@ Static Function fCarregaVlrTab(aMed)
 			" AND BD4N.D_E_L_E_T_ = ' ')" +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
 		" AND BR8.BR8_ALTCUS = '1'" +;
+		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA, BD4.BD4_CODTAB, BD4.BD4_CODIGO"
 
@@ -1340,29 +1343,41 @@ Static Function fCarregaVlrTab(aMed)
 Return
 
 /*/{Protheus.doc} fProcAltoCusto
-Procedimentos de alto custo lancados na guia: itens da tabela escolhida por fCfgProc() (B53_TIPGUI e
-B53_ALIMOV), pela chave do B53_NUMGUI, com BR8_ALTCUS = '1' no CODPAD + CODPRO do item.
+Procedimentos de alto custo lancados na guia: itens da tabela escolhida por fCfgProc() (B53_TIPO e
+B71_ALIMOV), pela chave do B53_NUMGUI, com BR8_ALTCUS = '1' no CODPAD + CODPRO do item e CODPAD em
+__CODPAD_BR8.
+Todos os procedimentos da guia vao para o log (com a tabela e a marca ALTO CUSTO); so os de alto
+custo sao devolvidos.
 Valor na guia = soma de quantidade solicitada x valor unitario (quantidade zerada conta como 1).
 Tabela ou campo ausente no dicionario so vai para o log (nova tentativa nao resolveria).
 @type function
-@param aItem, array, B71 com __I_TIPGUI, __I_B53ALI e __I_B53GUI (fMontaB71)
+@param aItem, array, B71 com __I_ALIMOV, __I_TIPO e __I_B53GUI (fMontaB71)
 @param aMed, array, medicamentos de fCarregaMed() (descricao e valor de tabela)
 @param lOk, logical, (por referencia) .F. se a consulta falhou (falha temporaria: a B71 nao avanca)
 @return array, itens no formato __F_*, com __F_ORIGEM = __O_PROC
 /*/
 Static Function fProcAltoCusto(aItem, aMed, lOk)
 
-	Local aCfg    := fCfgProc(aItem[__I_TIPGUI], aItem[__I_B53ALI])
+	Local aCfg    := fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])
 	Local cIte    := aCfg[__C_ALIAS]
-	Local cNumGui := aItem[__I_B53GUI]
+	Local lBea    := cIte == "BE2" .And. !Empty(aItem[__I_CHVBEA])
+	Local cNumGui := IIf(lBea, aItem[__I_CHVBEA], aItem[__I_B53GUI])
+	Local cOrigem := IIf(lBea, "chave da BEA recno " + aItem[__I_RECMOV], "B53_NUMGUI")
 	Local aPartes := __NUMGUI_PT
 	Local aCampos := {aCfg[__C_CODPAD], aCfg[__C_CODPRO], aCfg[__C_QTD], aCfg[__C_VALOR]}
 	Local aProc   := {}
+	Local aLinhas := {}
 	Local cFalta  := ""
 	Local cQtd    := ""
 	Local cQuery  := ""
 	Local cAlias  := ""
 	Local cCod    := ""
+	Local cDescri := ""
+	Local cCodPad := ""
+	Local cChave  := ""
+	Local cValor  := ""
+	Local lAltCus := .F.
+	Local lAltBr8 := .F.
 	Local oErro   := Nil
 	Local nIni    := 1
 	Local nTotal  := 0
@@ -1373,7 +1388,7 @@ Static Function fProcAltoCusto(aItem, aMed, lOk)
 
 	aEval(aPartes, {|x| nTotal += x})
 	If Len(cNumGui) != nTotal .Or. !fSoDigitos(cNumGui)
-		fLog("WARN", "  procedimentos nao verificados: B53_NUMGUI '" + cNumGui + "' fora do formato OPEMOV+ANOAUT+MESAUT+NUMAUT")
+		fLog("WARN", "  procedimentos nao verificados: " + cOrigem + " '" + cNumGui + "' fora do formato OPEMOV+ANOAUT+MESAUT+NUMAUT")
 		Return aProc
 	EndIf
 
@@ -1384,31 +1399,42 @@ Static Function fProcAltoCusto(aItem, aMed, lOk)
 	EndIf
 
 	cQtd := "(CASE WHEN IT." + aCfg[__C_QTD] + " > 0 THEN IT." + aCfg[__C_QTD] + " ELSE 1 END)"
-	cQuery := "SELECT IT." + aCfg[__C_CODPAD] + " AS CODPAD, IT." + aCfg[__C_CODPRO] + " AS CODPRO, BR8.BR8_DESCRI," +;
+	cQuery := "SELECT IT." + aCfg[__C_CODPAD] + " AS CODPAD, IT." + aCfg[__C_CODPRO] + " AS CODPRO," +;
+		" BR8.BR8_CODPSA AS BR8COD, BR8.BR8_DESCRI, BR8.BR8_ALTCUS," +;
 		" SUM(" + cQtd + ") AS QTD, SUM(" + cQtd + " * IT." + aCfg[__C_VALOR] + ") AS VALOR" +;
 		" FROM " + RetSqlName(cIte) + " IT" +;
-		" INNER JOIN " + RetSqlName("BR8") + " BR8" +;
+		" LEFT JOIN " + RetSqlName("BR8") + " BR8" +;
 		" ON BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
 		" AND BR8.BR8_CODPAD = IT." + aCfg[__C_CODPAD] +;
 		" AND BR8.BR8_CODPSA = IT." + aCfg[__C_CODPRO] +;
-		" AND BR8.BR8_ALTCUS = '1'" +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" WHERE IT." + cIte + "_FILIAL = '" + xFilial(cIte) + "'"
 	For nI := 1 To Len(aCfg[__C_CHAVE])
 		cQuery += " AND IT." + aCfg[__C_CHAVE][nI] + " = '" + SubStr(cNumGui, nIni, aPartes[nI]) + "'"
+		cChave += IIf(nI > 1, "+", "") + aCfg[__C_CHAVE][nI]
+		cValor += IIf(nI > 1, " ", "") + SubStr(cNumGui, nIni, aPartes[nI])
 		nIni += aPartes[nI]
 	Next nI
 	cQuery += " AND IT.D_E_L_E_T_ = ' '" +;
-		" GROUP BY IT." + aCfg[__C_CODPAD] + ", IT." + aCfg[__C_CODPRO] + ", BR8.BR8_DESCRI" +;
+		" GROUP BY IT." + aCfg[__C_CODPAD] + ", IT." + aCfg[__C_CODPRO] + ", BR8.BR8_CODPSA, BR8.BR8_DESCRI, BR8.BR8_ALTCUS" +;
 		" ORDER BY IT." + aCfg[__C_CODPRO]
 
 	BEGIN SEQUENCE
 		cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
 		While !(cAlias)->(Eof())
-			cCod := AllTrim((cAlias)->CODPRO)
-			nM   := aScan(aMed, {|x| x[__M_CODPSA] == cCod .And. x[__M_CODPAD] == AllTrim((cAlias)->CODPAD)})
-			aAdd(aProc, {cCod, AllTrim((cAlias)->BR8_DESCRI), "", "", AllTrim((cAlias)->CODPAD),;
-				IIf(nM > 0, aMed[nM][__M_VLRTAB], __VLR_ND), fMoeda((cAlias)->VALOR), "", __O_PROC, fQtd((cAlias)->QTD)})
+			cCod    := AllTrim((cAlias)->CODPRO)
+			cCodPad := AllTrim((cAlias)->CODPAD)
+			cDescri := IIf(Empty((cAlias)->BR8COD), "(nao cadastrado na BR8)", AllTrim((cAlias)->BR8_DESCRI))
+			lAltBr8 := AllTrim((cAlias)->BR8_ALTCUS) == "1"
+			lAltCus := lAltBr8 .And. aScan(__CODPAD_BR8, cCodPad) > 0
+			aAdd(aLinhas, "    [" + cIte + "] " + cCodPad + " " + cCod + " - " + cDescri +;
+				" | qtd " + fQtd((cAlias)->QTD) + " | " + fMoeda((cAlias)->VALOR) +;
+				IIf(lAltCus, " | ALTO CUSTO", IIf(lAltBr8, " | alto custo na BR8, CODPAD fora de " + fCodPadTxt() + " (ignorado)", "")))
+			If lAltCus
+				nM := aScan(aMed, {|x| x[__M_CODPSA] == cCod .And. x[__M_CODPAD] == cCodPad})
+				aAdd(aProc, {cCod, cDescri, "", "", cCodPad,;
+					IIf(nM > 0, aMed[nM][__M_VLRTAB], __VLR_ND), fMoeda((cAlias)->VALOR), "", __O_PROC, fQtd((cAlias)->QTD)})
+			EndIf
 			(cAlias)->(DbSkip())
 		EndDo
 		(cAlias)->(DbCloseArea())
@@ -1424,26 +1450,33 @@ Static Function fProcAltoCusto(aItem, aMed, lOk)
 		Return {}
 	EndIf
 
-	fLog("INFO", "  " + cValToChar(Len(aProc)) + " procedimento(s) de alto custo nos itens " + cIte + " da guia")
+	If Len(aLinhas) == 0
+		fLog("INFO", "  itens " + cIte + " da guia (" + cOrigem + ": " + cChave + " = " + cValor + "): nenhum procedimento lancado")
+	Else
+		fLog("INFO", "  itens " + cIte + " da guia (" + cOrigem + ": " + cChave + " = " + cValor + "): " + cValToChar(Len(aLinhas)) +;
+			" procedimento(s), " + cValToChar(Len(aProc)) + " de alto custo")
+		aEval(aLinhas, {|x| fLog("INFO", x)})
+	EndIf
 
 Return aProc
 
 /*/{Protheus.doc} fCfgProc
 Tabela de itens da guia pelo tipo da guia na B53. A chave dos itens e o B53_NUMGUI dividido em
-__NUMGUI_PT (OPEMOV + ANOAUT + MESAUT + NUMAUT). Confirmar com levantamento/07-b53-tipgui-itens.sql.
+__NUMGUI_PT (OPEMOV + ANOAUT + MESAUT + NUMAUT); na BE2 de uma B71 da BEA, a chave da propria BEA
+(fChaveBea). Confirmar com levantamento/07-b53-tipgui-itens.sql.
 @type function
-@param cTipGui, character, B53_TIPGUI
-@param cAliB53, character, B53_ALIMOV
+@param cTipo, character, B53_TIPO
+@param cAliMov, character, B71_ALIMOV (tabela origem da movimentacao)
 @return array, {cAliIte, {aCamposChave}, cCpoCodPad, cCpoCodPro, cCpoQtd, cCpoVlrUnit} (posicoes __C_*)
 /*/
-Static Function fCfgProc(cTipGui, cAliB53)
+Static Function fCfgProc(cTipo, cAliMov)
 
-	Local nTip := Val(AllTrim(cTipGui))
+	Local nTip := Val(AllTrim(cTipo))
 
 	Do Case
 	Case aScan(__TIP_BE2, nTip) > 0
 		Return {"BE2", {"BE2_OPEMOV", "BE2_ANOAUT", "BE2_MESAUT", "BE2_NUMAUT"}, "BE2_CODPAD", "BE2_CODPRO", "BE2_QTDSOL", "BE2_VLRAPR"}
-	Case nTip == __TIP_BQV .And. AllTrim(cAliB53) == "B4Q"
+	Case nTip == __TIP_BQV .And. AllTrim(cAliMov) == "B4Q"
 		Return {"BQV", {"BQV_CODOPE", "BQV_ANOINT", "BQV_MESINT", "BQV_NUMINT"}, "BQV_CODPAD", "BQV_CODPRO", "BQV_QTDSOL", "BQV_VLRAPR"}
 	EndCase
 
@@ -1490,6 +1523,50 @@ Static Function fSqlStr(xValor)
 
 Return StrTran(cRet, "'", "''")
 
+/*/{Protheus.doc} fSqlIn
+@type function
+@return character, lista para o IN do SQL, ex.: "('00', '20')"
+/*/
+Static Function fSqlIn(aValores)
+
+	Local cRet := ""
+
+	aEval(aValores, {|x| cRet += IIf(Empty(cRet), "", ", ") + "'" + fSqlStr(x) + "'"})
+
+Return "(" + cRet + ")"
+
+/*/{Protheus.doc} fCodPadTxt
+@type function
+@return character, CODPADs de __CODPAD_BR8 separados por "/" (ex.: "00/20"), para log e e-mail
+/*/
+Static Function fCodPadTxt()
+Return fListaCpo(__CODPAD_BR8)
+
+/*/{Protheus.doc} fFiltroDep
+@type function
+@return character, filtro " AND B71.B71_CODDEP IN (...)" com os departamentos de __CODDEP, ou ""
+	(todos os departamentos) se __CODDEP estiver vazio
+/*/
+Static Function fFiltroDep()
+
+	Local aDep := __CODDEP
+
+	If Len(aDep) == 0
+		Return ""
+	EndIf
+
+Return " AND B71.B71_CODDEP IN " + fSqlIn(aDep)
+
+/*/{Protheus.doc} fDepTxt
+@type function
+@return character, departamentos de __CODDEP separados por "/" (ex.: "012/015"), ou "todos", para log
+/*/
+Static Function fDepTxt()
+
+	Local aDep := __CODDEP
+
+Return IIf(Len(aDep) == 0, "todos", fListaCpo(aDep))
+
 /*/{Protheus.doc} fMoeda
 @type function
 @return character, "R$ 1.234,56"
@@ -1520,7 +1597,7 @@ Static Function fNormaliza(cTexto)
 Return Upper(FwNoAccent(AllTrim(cTexto)))
 
 /*/{Protheus.doc} fConsulta
-Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = fDataMov(cData), CODDEP = __CODDEP) e, para cada uma,
+Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = fDataMov(cData), CODDEP em __CODDEP) e, para cada uma,
 resolve a guia na tabela origem e os anexos B53 -> AC9 -> ACB.
 Todas as B71 da janela voltam, inclusive sem anexo ou com alias desconhecido, para que o
 watermark possa avancar sobre elas.
@@ -1540,7 +1617,7 @@ Static Function fConsulta(nUltimo, cData)
 	cQuery := "SELECT B71.R_E_C_N_O_ AS B71REC, B71.B71_ALIMOV, B71.B71_RECMOV, B71.B71_DATMOV" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
-		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
+		fFiltroDep() +;
 		" AND B71.B71_DATMOV = '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '" +;
@@ -1576,7 +1653,7 @@ Static Function fAvisaAtrasadas(nUltimo, cData)
 	cQuery := "SELECT COUNT(*) AS QTD, MIN(B71.R_E_C_N_O_) AS PRIREC, MIN(B71.B71_DATMOV) AS PRIDAT" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
-		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
+		fFiltroDep() +;
 		" AND B71.B71_DATMOV < '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '"
@@ -1595,9 +1672,11 @@ Return
 
 /*/{Protheus.doc} fMontaB71
 Resolve guia, B53 (tipo da guia) e anexos de uma B71.
+B71 da BEA: guarda a chave da BEA do registro do B71_RECMOV (itens da BE2) e, com o BEA_GUIORI vazio,
+usa essa chave como numero da guia.
 @type function
 @return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov, aPessoas,
-	cTipGui, cB53Ali, cB53Gui}
+	cTipo, cB53Gui, cChvBea}
 /*/
 Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 
@@ -1617,9 +1696,9 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_TEXTOS] := {}
 	aItem[__I_DATMOV] := cDatMov
 	aItem[__I_PESSOAS] := {}
-	aItem[__I_TIPGUI] := ""
-	aItem[__I_B53ALI] := ""
+	aItem[__I_TIPO]   := ""
 	aItem[__I_B53GUI] := ""
+	aItem[__I_CHVBEA] := ""
 
 	If Empty(cCampo)
 		aItem[__I_STATUS] := __ST_ALIAS
@@ -1637,7 +1716,14 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 		Return aItem
 	EndIf
 
+	If cAliMov == "BEA"
+		aItem[__I_CHVBEA] := fChaveBea()
+	EndIf
+
 	cGuia := AllTrim((cAliMov)->(FieldGet(nPosCpo)))
+	If Empty(cGuia)
+		cGuia := aItem[__I_CHVBEA]
+	EndIf
 	If Empty(cGuia)
 		aItem[__I_STATUS] := __ST_SEMGUIA
 		Return aItem
@@ -1646,7 +1732,7 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_NUMGUI] := cGuia
 
 	If !fCamposOk("B53", __CPO_B53, @cFalta)
-		aItem[__I_STATUS] := __ST_TIPGUI
+		aItem[__I_STATUS] := __ST_CPOB53
 		Return aItem
 	EndIf
 
@@ -1655,21 +1741,49 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 		aItem[__I_STATUS] := __ST_SEMB53
 		Return aItem
 	EndIf
-	aItem[__I_TIPGUI] := aB53[1]
-	aItem[__I_B53ALI] := aB53[2]
-	aItem[__I_B53GUI] := aB53[3]
+	aItem[__I_TIPO]   := aB53[1]
+	aItem[__I_B53GUI] := aB53[2]
 
 	aItem[__I_ANEXOS] := fBuscaAnexos(cGuia)
 	aItem[__I_STATUS] := IIf(Len(aItem[__I_ANEXOS]) > 0, __ST_OK, __ST_SEMANEXO)
 
 Return aItem
 
+/*/{Protheus.doc} fChaveBea
+Chave da BEA posicionada (fPosOrigem): OPEMOV + ANOAUT + MESAUT + NUMAUT, sem AllTrim para manter
+o tamanho de cada parte (__NUMGUI_PT).
+@type function
+@return character, chave de 18 posicoes, ou "" se algum campo nao existir no dicionario ou estiver vazio
+/*/
+Static Function fChaveBea()
+
+	Local aCampos := __CPO_CHVBEA
+	Local cChave  := ""
+	Local cFalta  := ""
+	Local cParte  := ""
+	Local nI      := 0
+
+	If !fCamposOk("BEA", aCampos, @cFalta)
+		fLog("WARN", "  chave da BEA indisponivel: " + cFalta + " nao existe no dicionario")
+		Return ""
+	EndIf
+
+	For nI := 1 To Len(aCampos)
+		cParte := BEA->(FieldGet(FieldPos(aCampos[nI])))
+		If Empty(cParte)
+			Return ""
+		EndIf
+		cChave += cParte
+	Next nI
+
+Return cChave
+
 /*/{Protheus.doc} fLeB53
 Guia na auditoria (B53) pelo numero da guia. Com mais de uma B53 para a guia (origens diferentes),
 usa a mais recente.
 @type function
 @param cGuia, character, numero da guia original/referencia (sem espacos)
-@return array, {cTipGui, cAliMov, cNumGui} da B53, ou {} se a guia nao estiver na B53
+@return array, {cTipo, cNumGui} da B53, ou {} se a guia nao estiver na B53
 /*/
 Static Function fLeB53(cGuia)
 
@@ -1679,7 +1793,7 @@ Static Function fLeB53(cGuia)
 	Local cQuery  := ""
 	Local cAlias  := ""
 
-	cQuery := "SELECT B53.B53_TIPGUI, B53.B53_ALIMOV, B53.B53_NUMGUI" +;
+	cQuery := "SELECT B53.B53_TIPO, B53.B53_NUMGUI" +;
 		" FROM " + RetSqlName("B53") + " B53" +;
 		" WHERE B53.B53_FILIAL = '" + xFilial("B53") + "'" +;
 		" AND B53.B53_NUMGUI = '" + PadR(cNumGui, nTam) + "'" +;
@@ -1689,7 +1803,7 @@ Static Function fLeB53(cGuia)
 	cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
 
 	If !(cAlias)->(Eof())
-		aRet := {AllTrim(cValToChar((cAlias)->B53_TIPGUI)), AllTrim((cAlias)->B53_ALIMOV), AllTrim((cAlias)->B53_NUMGUI)}
+		aRet := {AllTrim(cValToChar((cAlias)->B53_TIPO)), AllTrim((cAlias)->B53_NUMGUI)}
 	EndIf
 
 	(cAlias)->(DbCloseArea())
@@ -1864,12 +1978,12 @@ Static Function fLogB71(aItem)
 	Case aItem[__I_STATUS] == __ST_SEMANEXO
 		cMsg += "guia " + aItem[__I_NUMGUI] + fDescTipo(aItem) + ", sem anexo no banco de conhecimento"
 	Case aItem[__I_STATUS] == __ST_SEMB53
-		cMsg += "guia " + aItem[__I_NUMGUI] + " nao encontrada na B53; nada a verificar"
-	Case aItem[__I_STATUS] == __ST_TIPGUI
+		cMsg += "guia " + aItem[__I_NUMGUI] + fGuiaBea(aItem) + " nao encontrada na B53; nada a verificar"
+	Case aItem[__I_STATUS] == __ST_CPOB53
 		cNivel := "ERROR"
 		cMsg   += "campo " + fListaCpo(__CPO_B53) + " nao existe no dicionario da B53"
 	Case aItem[__I_STATUS] == __ST_SEMGUIA
-		cMsg += "campo da guia vazio na tabela origem"
+		cMsg += "campo da guia vazio na tabela origem" + IIf(aItem[__I_ALIMOV] == "BEA", " e chave da BEA indisponivel", "")
 	Case aItem[__I_STATUS] == __ST_ORIGEM
 		cNivel := "WARN"
 		cMsg   += "registro origem nao encontrado ou deletado"
@@ -1887,11 +2001,17 @@ Return
 
 /*/{Protheus.doc} fDescTipo
 @type function
-@return character, " (B53_TIPGUI x, B53_ALIMOV y, itens z)" para o log
+@return character, " (B53_TIPO x, itens z)" para o log
 /*/
 Static Function fDescTipo(aItem)
-Return " (B53_TIPGUI " + aItem[__I_TIPGUI] + ", B53_ALIMOV " + aItem[__I_B53ALI] + ", itens " +;
-	fCfgProc(aItem[__I_TIPGUI], aItem[__I_B53ALI])[__C_ALIAS] + ")"
+Return fGuiaBea(aItem) + " (B53_TIPO " + aItem[__I_TIPO] + ", itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")"
+
+/*/{Protheus.doc} fGuiaBea
+@type function
+@return character, " pela chave da BEA" quando o numero da guia veio da BEA (BEA_GUIORI vazio), senao ""
+/*/
+Static Function fGuiaBea(aItem)
+Return IIf(!Empty(aItem[__I_CHVBEA]) .And. aItem[__I_NUMGUI] == aItem[__I_CHVBEA], " pela chave da BEA", "")
 
 /*/{Protheus.doc} fListaCpo
 @type function

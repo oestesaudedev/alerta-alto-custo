@@ -15,13 +15,14 @@ O ADVPL/TLPP não lê PDF nem faz OCR, e o `FTPConnect` não fala SFTP. Por isso
 Scheduler (15 min) → U_OSMEDALTC
   1. Lê Z_NOTIENCA (último R_E_C_N_O_ da B71 já verificado)
   2. GET /config na API: IA ligada ou não (IA_HABILITADA no .env da API)
-  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1') INNER JOIN BA8 + valor de tabela (BD4)
+  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1', BR8_CODPAD 00 ou 20) INNER JOIN BA8 + valor de tabela (BD4)
   4. B71 novas: R_E_C_N_O_ > Z_NOTIENCA, B71_DATMOV = hoje, B71_CODDEP = '012'
   5. Para cada B71:
        B71_ALIMOV + B71_RECMOV → tabela origem (BEA | BE4 | B44 | B4Q | B4A) → número da guia
-       → B53 (B53_NUMGUI): B53_TIPGUI e B53_ALIMOV escolhem a tabela de itens
-           1, 2, 3, 4, 5, 7 → BE2 | 11 com B53_ALIMOV = B4Q → BQV | demais → B4C
-       → procedimentos da guia (chave = B53_NUMGUI) com BR8_ALTCUS = '1', com qtd e valor na guia
+         (BEA: chave OPEMOV+ANOAUT+MESAUT+NUMAUT do próprio registro nos itens da BE2 e, sem BEA_GUIORI, como guia)
+       → B53 (B53_NUMGUI): B53_TIPO e B71_ALIMOV escolhem a tabela de itens
+           1, 2, 3, 4, 5, 7 → BE2 | 11 com B71_ALIMOV = B4Q → BQV | demais → B4C
+       → procedimentos da guia (chave = B53_NUMGUI) com BR8_ALTCUS = '1' e CODPAD 00 ou 20, com qtd e valor na guia
        → só com a IA ligada:
            AC9 (AC9_CODENT contém a guia) → ACB (ACB_OBJETO = nome do arquivo)
            → POST /verificar-sftp {arquivo, ambiente, medicamentos, mascarar} na API, que:
@@ -36,13 +37,13 @@ Scheduler (15 min) → U_OSMEDALTC
 Regras importantes:
 
 - **Sem reprocessamento.** O `Z_NOTIENCA` avança após cada B71 concluída, com ou sem anexo, medicamento ou e-mail. A próxima execução não repete e-mail.
-- **Falha temporária não avança.** API fora (inclusive no `GET /config` do início da execução), timeout (300 s por anexo), token errado, SFTP inacessível, IA ligada mas indisponível (Claude fora, chave inválida), erro na consulta dos itens da guia, SMTP fora, requisição recusada pela API (HTTP 400) ou API antiga, sem o `/config` ou o `/verificar-sftp` (HTTP 404): o job para na B71 e a retoma na próxima execução. `B53_TIPGUI` ausente no dicionário também bloqueia (`CAMPO_B53_INEXISTENTE`).
+- **Falha temporária não avança.** API fora (inclusive no `GET /config` do início da execução), timeout (300 s por anexo), token errado, SFTP inacessível, IA ligada mas indisponível (Claude fora, chave inválida), erro na consulta dos itens da guia, SMTP fora, requisição recusada pela API (HTTP 400) ou API antiga, sem o `/config` ou o `/verificar-sftp` (HTTP 404): o job para na B71 e a retoma na próxima execução. `B53_TIPO` ausente no dicionário também bloqueia (`CAMPO_B53_INEXISTENTE`).
 - **Falha definitiva é descartada.** Arquivo inexistente no SFTP, extensão não suportada ou nome inválido: o anexo é ignorado e a B71 segue.
 - **Só o dia corrente.** O agendamento não processa B71 de dias anteriores que ficaram pendentes (job parado na virada do dia); o log registra um `WARN` com a quantidade. Para verificá-las, use `U_dataMEDALTC` (ver [Manutenção](#manutenção-do-dia-a-dia)).
 - **PDF escaneado longo.** A API passa pelo OCR só as primeiras `PDF_MAX_PAGINAS` páginas (padrão 30), para responder dentro do timeout. Medicamento citado só depois disso não é detectado; o log da API avisa.
 - **Execução única.** `LockByName` impede duas execuções simultâneas.
 - **Dados de saúde.** O e-mail e o log não trazem trechos do texto do anexo, só tamanho, método e tempo.
-- **Procedimentos primeiro.** Todo procedimento lançado na guia com `BR8_ALTCUS = '1'` entra no alerta, com ou sem IA. Guia sem anexo também é verificada. Detalhes em [configuracoes.md](configuracoes.md#25-procedimentos-da-guia-camada-antes-da-ia).
+- **Procedimentos primeiro.** Todo procedimento lançado na guia com `BR8_ALTCUS = '1'` e `CODPAD` `00` ou `20` entra no alerta, com ou sem IA. Guia sem anexo também é verificada. Detalhes em [configuracoes.md](configuracoes.md#25-procedimentos-da-guia-camada-antes-da-ia).
 - **A IA (Claude) é opcional.** Com `IA_HABILITADA=true`, o Claude lê o texto de cada anexo e aponta os medicamentos da lista citados pelo nome do cadastro, nome comercial, princípio ativo, abreviação ou com erro de OCR. Ela confirma os procedimentos ("Procedimento + IA") e acrescenta os medicamentos citados que não foram lançados ("Anexo (IA)"); procedimento não citado continua no alerta. Confiança alta ou média entra no alerta; baixa só no log. Com `IA_HABILITADA=false`, os anexos não são enviados e o alerta sai só pelos procedimentos. Antes do envio, a API mascara CPF, CNS, carteirinha, telefone, e-mail, data de nascimento, os nomes do beneficiário e do solicitante da guia (enviados pelo job) e o que vier depois de rótulos como "Paciente:". O texto do anexo não volta para o Protheus. Detalhes em [configuracoes.md](configuracoes.md#11-ia-claude-confirmação-nos-anexos-opcional).
 - **Log.** Tudo o que o job registra vai para `\logpls\alto_custo_AAAAMMDD.log` no RootPath (um arquivo por dia, criado sozinho, gravado pela função padrão do PLS `PlsPtuLog`, com gravação própria como fallback) e para o console do AppServer. Os arquivos antigos são apagados manualmente.
 
@@ -92,7 +93,7 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
    |---|---|
    | `__MAIL_TO` | Caixa que recebe os alertas (hoje aponta para um e-mail pessoal) |
    | `__ENV_PROD` / `__URL_PROD` | Ambiente `CYWSXT_PROD` usa `http://10.1.5.14:6177`; qualquer outro usa `__URL_DEV` (`http://localhost:3010`) |
-   | `__CODDEP` | Departamento da B71 (`012`) |
+   | `__CODDEP` | Departamentos da B71 (`{"012"}`; `{}` = todos) |
    | `__DATA_DBG` / `__CODOBJ` | Filtros de depuração. **Vazios em produção** |
 
 4. **Compilar** `OS_MEDALTC.tlpp` no RPO.
@@ -125,7 +126,7 @@ Não exponha a porta da API na internet. Em produção, libere a `6177` só para
 
 | Mudança | Como |
 |---|---|
-| Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8 (precisa ter BA8 correspondente). Vale na próxima execução |
+| Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8, com `BR8_CODPAD` `00` ou `20` (precisa ter BA8 correspondente). Vale na próxima execução. Outras tabelas padrão: `__CODPAD_BR8` no fonte + novo patch |
 | Ligar ou desligar a IA | `IA_HABILITADA` no `.env` (com `true`, `ANTHROPIC_API_KEY` preenchida) + reiniciar a API. Vale na próxima execução do job |
 | Trocar o modelo do Claude | `IA_MODELO` no `.env` + reiniciar a API |
 | Mudar a regra do tipo de guia | `__TIP_BE2` / `__TIP_BQV` / `fCfgProc()` no fonte + recompilar |

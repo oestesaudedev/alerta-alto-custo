@@ -80,7 +80,9 @@ export class ExtrairSftpDto {
 }
 
 export type ConfiancaIa = 'alta' | 'media' | 'baixa';
-export type AchadoIa = { codigo: string; termo: string; confianca: ConfiancaIa; motivo: string };
+// Só "solicitado" chega aos achados: o IaService descarta os demais
+export type ContextoIa = 'solicitado' | 'informativo' | 'historico' | 'outro';
+export type AchadoIa = { codigo: string; termo: string; contexto: ContextoIa; confianca: ConfiancaIa; motivo: string };
 // `cortado`: o texto passou de IA_MAX_CHARS e a IA só leu o início
 export type ResultadoIaOk = { ok: true; modelo: string; achados: AchadoIa[]; cortado?: boolean };
 export type ResultadoIa = ResultadoIaOk | { ok: false; erro: string };

@@ -138,15 +138,16 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 | --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `__MAIL_TO`     | `michel.ramos@oestesaude.com.br` | Destinatário do e-mail de alerta                                                                                                                                                                                                                             |
 | `__API_URL`     | `fApiUrl()`                      | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6177` (`__URL_PROD`); qualquer outro usa `__URL_DEV`. O caminho é `__API_PATH` (`/verificar-sftp`). Mudar exige recompilar |
-| `__CODDEP`      | `012`                            | Departamento filtrado na B71 (`B71_CODDEP`)                                                                                                                                                                                                                  |
+| `__CODDEP`      | `{"012"}`                        | Departamentos filtrados na B71 (`B71_CODDEP IN (...)`). Array vazio (`{}`) = todos os departamentos                                                                                                                                                          |
 | `__CODOBJ`      | `""` (vazio)                     | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio                                                                                                                                                                     |
 | `__LOG_DIR` / `__LOG_ARQ` | `"\logpls\"` / `"alto_custo"` | Log em arquivo, um por dia: `\logpls\alto_custo_AAAAMMDD.log` no RootPath, com as mesmas linhas do console. Gravado pela função padrão do PLS `PlsPtuLog`; se ela não existir no RPO, o fonte grava por conta própria em `__LOG_DIR`. A pasta é criada sozinha; os arquivos antigos são apagados manualmente |
 | `__DATA_DBG`    | `""` (vazio)                     | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio                                                                                                                         |
 | `__CPO_NOMES` / `__CPO_MATRIC` | `{"_NOMUSR", "_NOMSOL"}` / `{"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}` | Sufixos dos campos da tabela de origem da guia (prefixo = alias, ex.: `BEA_NOMUSR`) com os nomes e a matrícula que a API mascara antes de enviar o texto ao Claude. Campo que não existir no dicionário é ignorado |
 | `__API_TIMEOUT` | `300`                            | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS`                                                                                                |
 | `__CFG_PATH`    | `/config`                        | Caminho do `GET` que informa se a IA está ligada na API (mesma URL base do `__API_URL`)                                                                                                                                                                     |
-| `__TIP_BE2` / `__TIP_BQV` | `{1, 2, 3, 4, 5, 7}` / `11` | `B53_TIPGUI` cujos itens ficam na BE2; `11` com `B53_ALIMOV = B4Q` usa a BQV; os demais, a B4C (seção 2.5)                                                                                                                                           |
+| `__TIP_BE2` / `__TIP_BQV` | `{1, 2, 3, 4, 5, 7}` / `11` | `B53_TIPO` cujos itens ficam na BE2; `11` com `B71_ALIMOV = B4Q` usa a BQV; os demais, a B4C (seção 2.5)                                                                                                                                           |
 | `__NUMGUI_PT`   | `{4, 4, 2, 8}`                   | Partes do `B53_NUMGUI` (OPEMOV + ANOAUT + MESAUT + NUMAUT) usadas como chave dos itens da guia                                                                                                                                                              |
+| `__CODPAD_BR8`  | `{"00", "20"}`                   | Tabelas padrão (`BR8_CODPAD`) consideradas no alto custo: lista de medicamentos (BR8/BA8/BD4) e procedimentos da guia. Item com `BR8_ALTCUS = '1'` em outro CODPAD vai só para o log, como ignorado                                                        |
 
 
 
@@ -187,15 +188,16 @@ O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **
 
 Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mais recente, se houver mais de uma) e escolhe a tabela de itens pelo tipo da guia:
 
-| `B53_TIPGUI` | Itens (cabeçalho) | Chave dos itens = `B53_NUMGUI` | Quantidade / valor unitário |
+| `B53_TIPO` | Itens (cabeçalho) | Chave dos itens = `B53_NUMGUI` | Quantidade / valor unitário |
 | --- | --- | --- | --- |
 | `1`, `2`, `3`, `4`, `5`, `7` | `BE2` (`BEA`) | `BE2_OPEMOV + BE2_ANOAUT + BE2_MESAUT + BE2_NUMAUT` | `BE2_QTDSOL` / `BE2_VLRAPR` |
-| `11` com `B53_ALIMOV = B4Q` | `BQV` (`B4Q`) | `BQV_CODOPE + BQV_ANOINT + BQV_MESINT + BQV_NUMINT` | `BQV_QTDSOL` / `BQV_VLRAPR` |
+| `11` com `B71_ALIMOV = B4Q` | `BQV` (`B4Q`) | `BQV_CODOPE + BQV_ANOINT + BQV_MESINT + BQV_NUMINT` | `BQV_QTDSOL` / `BQV_VLRAPR` |
 | demais | `B4C` (`B4A`) | `B4C_OPEMOV + B4C_ANOAUT + B4C_MESAUT + B4C_NUMAUT` | `B4C_QTDSOL` / `B4C_VLRUNT` |
 
-- Um item é de alto custo quando o `CODPAD + CODPRO` dele tem `BR8_ALTCUS = '1'` na BR8.
+- **B71 da BEA** (`B71_ALIMOV = BEA`): o job lê a chave `BEA_OPEMOV + BEA_ANOAUT + BEA_MESAUT + BEA_NUMAUT` no registro apontado pelo `B71_RECMOV`. Nos itens da BE2, essa chave substitui o `B53_NUMGUI`; e, se o `BEA_GUIORI` estiver vazio, ela também é usada como número da guia para achar a B53 e os anexos (antes a B71 era concluída sem verificação). O log indica `chave da BEA recno ...` ou `pela chave da BEA`.
+- Um item é de alto custo quando o `CODPAD + CODPRO` dele tem `BR8_ALTCUS = '1'` na BR8 e o `CODPAD` é `00` ou `20` (`__CODPAD_BR8`). Com `BR8_ALTCUS = '1'` em outro CODPAD, o log mostra `alto custo na BR8, CODPAD fora de 00/20 (ignorado)` e o item não entra no e-mail.
 - Valor na guia = soma de quantidade solicitada × valor unitário dos itens com o mesmo código (quantidade zerada conta como 1).
-- `B53_TIPGUI` não existe no dicionário padrão da B53. Sem ele (ou sem `B53_ALIMOV`), o job registra `CAMPO_B53_INEXISTENTE` e não avança o `Z_NOTIENCA`. Confira com `levantamento/07-b53-tipgui-itens.sql`.
+- O alias vem da própria B71 (`B71_ALIMOV`, a tabela origem da movimentação), não da B53. Sem o `B53_TIPO` no dicionário, o job registra `CAMPO_B53_INEXISTENTE` e não avança o `Z_NOTIENCA`. Confira com `levantamento/07-b53-tipgui-itens.sql`.
 - Guia sem B53: nada a verificar, a B71 é concluída. Tabela ou campo de itens ausente no dicionário: `ERROR` no log e a B71 segue sem procedimentos. Erro na consulta dos itens: falha temporária (não avança).
 
 ---
@@ -225,7 +227,7 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 
 - [ ] `api-extracao-texto/.env` criado com `API_TOKEN` (32+ caracteres), `SFTP_DIR`, as `SFTP_PROD_*` (produção) ou `SFTP_DEV_*` (dev), incluindo o `*_HOSTKEY`, e `IA_HABILITADA` decidido (`true` exige `ANTHROPIC_API_KEY`)
 - [ ] Com a IA ligada: saída 443 da máquina da API para `api.anthropic.com`
-- [ ] `B53_TIPGUI` e os campos dos itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
+- [ ] `B53_TIPO` e os campos dos itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
 - [ ] API no ar (Docker ou pm2) e respondendo em `http://localhost:3010` (dev) ou `http://10.1.5.14:6177` (produção)
 - [ ] Teste da API: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (todos os testes OK)
 - [ ] SX6 `Z_NOTIENCA` cadastrado

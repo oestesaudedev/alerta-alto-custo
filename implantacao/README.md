@@ -11,7 +11,7 @@ Roteiro para pôr em produção a API de extração e o job `U_OSMEDALTC` no Sch
 
 **Ordem**: suba a API nova (seção 1) **antes** do patch do RPO (seção 2). O fonte atual chama o `GET /config` no início de cada execução (para saber se a IA está ligada) e, com a IA ligada, o `POST /verificar-sftp`; com a API antiga, o `/config` volta HTTP 404 e o job para sem avançar o `Z_NOTIENCA` (o `U_chkMEDALTC()` avisa "API sem o /config: atualizar a API"). A API nova continua atendendo o `/extrair-sftp` do fonte anterior, então pode ir para produção antes do patch sem afetar o job que já roda. Exceção: se estiver no RPO o patch intermediário que chamava o `/verificar-sftp` com os campos `ia` e `retornarTexto`, a API nova o recusa (HTTP 400 "property ia should not exist"); aplique o patch atual logo depois de subir a API.
 
-**Pré-requisito**: a verificação principal é a dos procedimentos lançados na guia, feita no Protheus; confira o `B53_TIPGUI` e as tabelas de itens com `levantamento/07-b53-tipgui-itens.sql`. A IA é opcional (`IA_HABILITADA`): para ligá-la, antes é preciso a aprovação do envio dos textos à Anthropic e a saída de rede para `api.anthropic.com` (seção 9).
+**Pré-requisito**: a verificação principal é a dos procedimentos lançados na guia, feita no Protheus; confira o `B53_TIPO` e as tabelas de itens com `levantamento/07-b53-tipgui-itens.sql`. A IA é opcional (`IA_HABILITADA`): para ligá-la, antes é preciso a aprovação do envio dos textos à Anthropic e a saída de rede para `api.anthropic.com` (seção 9).
 
 ## 1. API em produção
 
@@ -76,7 +76,7 @@ Conferir também os `MV_REL*` do SMTP de produção (`configuracoes.md`, seção
 
 ### 2.4 Diagnóstico em produção
 
-Executar `U_chkMEDALTC()` uma vez. Ele não grava o `Z_NOTIENCA` nem envia e-mail. Todas as linhas devem sair `[OK]`: token, watermark, flag da IA (conferir se diz habilitada ou desabilitada como esperado), medicamentos, B71 da janela (com `B53_TIPGUI`, tabela de itens e procedimentos de alto custo), API + token + SFTP e SMTP.
+Executar `U_chkMEDALTC()` uma vez. Ele não grava o `Z_NOTIENCA` nem envia e-mail. Todas as linhas devem sair `[OK]`: token, watermark, flag da IA (conferir se diz habilitada ou desabilitada como esperado), medicamentos, B71 da janela (com `B53_TIPO`, tabela de itens e procedimentos de alto custo), API + token + SFTP e SMTP.
 
 Com a IA ligada, depois, `U_chkMEDALTC("<ACB_OBJETO>")` com um anexo real que cite um medicamento de alto custo: deve sair `[OK] Verificacao de <anexo> (extracao + IA) - via <metodo> e <modelo> em <s>s` e a lista dos medicamentos que entrariam no alerta. "IA indisponivel" indica `IA_HABILITADA`, chave ou saída 443 (ver o log da API, `IA falhou ...`).
 
@@ -110,7 +110,16 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 
 - Se a linha `Config` mostrar `localhost:3010`, o ambiente não se chama `CYWSXT_PROD` (a comparação ignora maiúsculas): conferir o nome do ambiente no `appserver.ini` antes de seguir.
 - `monitoramento.sql`, consulta 2: `PENDENTES` volta a 0 depois de cada execução.
-- Cada B71 com guia mostra `(B53_TIPGUI x, B53_ALIMOV y, itens BE2|BQV|B4C)` e `n procedimento(s) de alto custo nos itens ... da guia`.
+- Cada B71 com guia mostra `(B53_TIPO x, itens BE2|BQV|B4C)` e, em seguida, a chave usada na busca e todos os procedimentos lançados, um por linha, com a tabela de origem; os de alto custo terminam em `| ALTO CUSTO`:
+
+  ```
+  itens BE2 da guia (chave da BEA recno 1645352: BE2_OPEMOV+BE2_ANOAUT+BE2_MESAUT+BE2_NUMAUT = 0001 2026 03 00012345): 3 procedimento(s), 1 de alto custo
+      [BE2] 00 10101012 - CONSULTA EM CONSULTORIO | qtd 1 | R$ 120,00
+      [BE2] 00 90012345 - MEDICAMENTO X | qtd 2 | R$ 8.400,00 | ALTO CUSTO
+      [BE2] 00 40301010 - (nao cadastrado na BR8) | qtd 1 | R$ 15,00
+  ```
+
+  `nenhum procedimento lancado` com guia que tem itens indica chave ou tabela de itens a conferir (`levantamento/07-b53-tipgui-itens.sql`, consulta 3). A linha final `n item(ns) de alto custo: ...` mostra a tabela nos procedimentos, ex.: `90012345 (Procedimento BE2)`.
 - Com a IA ligada, cada anexo verificado aparece como `<anexo>: texto via <método>, IA <modelo> em <s>s, n achado(s)`.
 - No log do job, `mascaramento para a IA: n nome(s)/matricula da guia` deve mostrar `n` maior que zero; com `0`, os campos de `__CPO_NOMES` / `__CPO_MATRIC` não existem nas tabelas de origem e precisam ser ajustados no fonte (conferir no SX3).
 - O primeiro alerta real chega em `__MAIL_TO` com os dados da guia e dos medicamentos.
@@ -128,7 +137,7 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 | `ERROR` "Cannot POST /verificar-sftp" | Fonte atual no RPO com a API antiga | Atualizar a API (seção 1). O job retoma sozinho |
 | `ERROR` "property ia should not exist" | Patch intermediário no RPO com a API nova | Aplicar o patch atual do `OS_MEDALTC.tlpp`. O job retoma sozinho |
 | `ERROR` "IA indisponivel: ..." | IA ligada, mas Claude fora, timeout, chave inválida ou saída 443 bloqueada (ou o flag mudou no meio da execução) | O job para na B71 e a retoma na próxima execução. Ver o log da API (`IA falhou ...`). Para seguir só com os procedimentos, `IA_HABILITADA=false` + reiniciar a API |
-| `ERROR` "campo B53_TIPGUI/B53_ALIMOV nao existe no dicionario da B53" | Campo do tipo da guia ausente na base | Job parado nessa B71 até criar/ajustar o campo (ver `levantamento/07-b53-tipgui-itens.sql`) |
+| `ERROR` "campo B53_TIPO nao existe no dicionario da B53" | Campo do tipo da guia ausente na base | Job parado nessa B71 até criar/ajustar o campo (ver `levantamento/07-b53-tipgui-itens.sql`) |
 | `ERROR` "procedimentos nao verificados: ... nao existe no dicionario" | Campo da tabela de itens (BE2, BQV, B4C) diferente do previsto em `fCfgProc` | A B71 segue sem os procedimentos (sem alerta por eles); corrigir o fonte |
 | `ERROR` "procedimentos da guia (itens ...): ..." | Erro na consulta dos itens | O job para na B71 e a retoma na próxima execução |
 | `ERROR` "medicamentos should not be empty" ou "descricao must be shorter" | Lista de medicamentos vazia ou com texto acima do limite da API (1000 caracteres por descrição ou termo) | Conferir a BR8/BA8 (`U_chkMEDALTC()` lista os medicamentos). O job retoma quando a lista for aceita |
@@ -176,7 +185,7 @@ Ao reativar, o job retoma do `Z_NOTIENCA`, mas só verifica B71 do dia corrente:
 - [ ] Credenciais expostas em 28/09/2026 trocadas: `API_TOKEN` de dev (e `Z_MEDAPIT` dos ambientes de teste), `SFTP_DEV_PASSWORD` e `SFTP_PROD_PASSWORD`
 - [ ] API de produção no ar em `10.1.5.14:6177` (`pm2 save` feito, ou Docker `healthy`)
 - [ ] Firewall só para o AppServer (Docker: regra na `DOCKER-USER`), conferido com `curl` de outra máquina dando timeout
-- [ ] `B53_TIPGUI` e os itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
+- [ ] `B53_TIPO` e os itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
 - [ ] Se a IA for ligada: envio dos textos à Anthropic aprovado (jurídico/DPO, DPA, ZDR) e saída 443 para `api.anthropic.com` (seção 9)
 - [ ] `.env` de produção com token novo (32+ caracteres), `SFTP_PROD_*` com `SFTP_PROD_HOSTKEY` conferido, `SFTP_DIR`, `SFTP_DEV_*` vazios, `IA_HABILITADA` decidido (`true` + `ANTHROPIC_API_KEY`), `EXTRAIR_BASE64` desligado, `chmod 600`
 - [ ] `curl` do passo 1.6 devolvendo "arquivo não encontrado no SFTP PROD"

@@ -43,15 +43,15 @@ async function main() {
     tokens: { entrada: 1, cache: 0, saida: 1 },
     dados: {
       achados: [
-        { codigo: '001', termo: 'Remicade', confianca: 'media', motivo: 'nome comercial de infliximabe' },
-        { codigo: '001', termo: 'INFLIXIMABE', confianca: 'alta', motivo: 'nome exato da lista' },
-        { codigo: '999', termo: 'Inventado', confianca: 'alta', motivo: 'fora da lista' },
-        { codigo: '002', termo: 'Rituximabe', confianca: 'certeza', motivo: 'confiança inválida' },
+        { codigo: '001', termo: 'Remicade', contexto: 'solicitado', confianca: 'media', motivo: 'nome comercial de infliximabe' },
+        { codigo: '001', termo: 'INFLIXIMABE', contexto: 'solicitado', confianca: 'alta', motivo: 'nome exato da lista' },
+        { codigo: '999', termo: 'Inventado', contexto: 'solicitado', confianca: 'alta', motivo: 'fora da lista' },
+        { codigo: '002', termo: 'Rituximabe', contexto: 'solicitado', confianca: 'certeza', motivo: 'confiança inválida' },
       ],
     },
   }));
   const ok = await new IaService(config, modelo).analisar(
-    'Paciente: João Carlos da Silva\nCPF 123.456.789-09\nEm uso de REMICADE e INFLIXIMABE',
+    'Paciente: João Carlos da Silva\nCPF 123.456.789-09\nSolicito REMICADE (INFLIXIMABE)',
     medicamentos,
     ['JOÃO CARLOS DA SILVA'],
   );
@@ -70,8 +70,68 @@ async function main() {
   caso(
     'descarta código fora da lista e confiança inválida; mantém a maior confiança por código',
     ok.ok && ok.modelo === 'falso-1' && ok.achados.length === 1 &&
-      ok.achados[0].codigo === '001' && ok.achados[0].confianca === 'alta',
+      ok.achados[0].codigo === '001' && ok.achados[0].confianca === 'alta' && ok.achados[0].contexto === 'solicitado',
     JSON.stringify(ok),
+  );
+  caso(
+    'prompt trata folheto, bula e termo de consentimento como informativo',
+    /folheto/.test(enviado.instrucoes) && /bula/.test(enviado.instrucoes) && /termo de consentimento/.test(enviado.instrucoes),
+    enviado.instrucoes,
+  );
+  caso(
+    'prompt trata "paciente em uso de" sem pedido como historico',
+    /paciente em uso de/.test(enviado.instrucoes) && /Estar em uso não é pedido de cobertura/.test(enviado.instrucoes),
+    enviado.instrucoes,
+  );
+  const item = enviado.saida?.esquema?.properties?.achados?.items ?? {};
+  caso(
+    'esquema exige contexto com os valores aceitos',
+    (item.required ?? []).includes('contexto') &&
+      JSON.stringify(item.properties?.contexto?.enum) === JSON.stringify(['solicitado', 'informativo', 'historico', 'outro']),
+    JSON.stringify(item),
+  );
+
+  const folheto = modeloFalso(() => ({
+    modelo: 'falso-1',
+    tokens: { entrada: 1, cache: 0, saida: 1 },
+    dados: {
+      achados: [
+        { codigo: '001', termo: 'Remicade', contexto: 'informativo', confianca: 'alta', motivo: 'folheto de reações adversas' },
+        { codigo: '002', termo: 'Rituximabe', contexto: 'historico', confianca: 'alta', motivo: 'citado como uso anterior' },
+      ],
+    },
+  }));
+  const informativo = await new IaService(config, folheto).analisar('Possíveis reações ao usar Remicade', medicamentos);
+  caso('contextos informativo e historico são descartados', informativo.ok && informativo.achados.length === 0, JSON.stringify(informativo));
+
+  const semContexto = modeloFalso(() => ({
+    modelo: 'falso-1',
+    tokens: { entrada: 1, cache: 0, saida: 1 },
+    dados: {
+      achados: [
+        { codigo: '001', termo: 'Remicade', confianca: 'alta', motivo: 'sem contexto' },
+        { codigo: '002', termo: 'Rituximabe', contexto: 'pedido', confianca: 'alta', motivo: 'contexto inválido' },
+      ],
+    },
+  }));
+  const invalido = await new IaService(config, semContexto).analisar('Remicade e Rituximabe', medicamentos);
+  caso('contexto ausente ou inválido é descartado', invalido.ok && invalido.achados.length === 0, JSON.stringify(invalido));
+
+  const misto = modeloFalso(() => ({
+    modelo: 'falso-1',
+    tokens: { entrada: 1, cache: 0, saida: 1 },
+    dados: {
+      achados: [
+        { codigo: '001', termo: 'Remicade', contexto: 'outro', confianca: 'alta', motivo: 'citado sem pedido' },
+        { codigo: '001', termo: 'Infliximabe', contexto: 'solicitado', confianca: 'media', motivo: 'solicitado no relatório' },
+      ],
+    },
+  }));
+  const umSolicitado = await new IaService(config, misto).analisar('Remicade ... solicito infliximabe', medicamentos);
+  caso(
+    'mesmo código citado e solicitado: fica o solicitado',
+    umSolicitado.ok && umSolicitado.achados.length === 1 && umSolicitado.achados[0].termo === 'Infliximabe',
+    JSON.stringify(umSolicitado),
   );
 
   const semCodigo = modeloFalso(() => ({ modelo: 'falso-1', tokens: { entrada: 0, cache: 0, saida: 0 }, dados: null }));

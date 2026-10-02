@@ -13,7 +13,7 @@ Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → B53 (t
 
 - API no ar e com os testes passando: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1`.
 - API alcançável pelo AppServer na URL do ambiente: fora do `CYWSXT_PROD` o job usa `http://localhost:3010`, então a API precisa estar na mesma máquina do AppServer; no `CYWSXT_PROD`, `http://10.1.5.14:6177`. A API precisa ser a versão com o `GET /config` e o `/verificar-sftp`. A linha `Config: ambiente ... | API ...` do log mostra a URL escolhida.
-- `B53_TIPGUI` existe no dicionário da B53 e a chave dos itens bate com o `B53_NUMGUI`: `levantamento/07-b53-tipgui-itens.sql`.
+- `B53_TIPO` existe no dicionário da B53 e a chave dos itens bate com o `B53_NUMGUI`: `levantamento/07-b53-tipgui-itens.sql`.
 - SX6: `Z_NOTIENCA` (via `U_OSCRIAZNOT`) e `Z_MEDAPIT` com o mesmo valor do `API_TOKEN` do `.env` da API.
 - SMTP: `MV_RELSERV`, `MV_RELACNT`, `MV_RELPSW`, `MV_RELAUTH`, `MV_RELSSL`, `MV_RELTLS`, `MV_RELFROM` (ver `configuracoes.md`).
 - `__MAIL_TO` apontando para uma caixa que você consegue ler.
@@ -34,7 +34,7 @@ Confere cada peça **sem gravar `Z_NOTIENCA` e sem enviar e-mail**. Todas as lin
 | Watermark `Z_NOTIENCA` | Rodar `U_OSCRIAZNOT`; o conteúdo tem de ser só dígitos |
 | Flag da IA (`GET /config`) | API fora do alcance, token diferente ou API antiga sem o `/config`. Com `[OK]`, a linha diz se a IA está habilitada ou desabilitada: conferir com o `IA_HABILITADA` do `.env` |
 | Medicamentos de alto custo | Nenhum `BR8_ALTCUS = '1'` com BA8 (conferir com `conferencia.sql`, consulta 4) |
-| B71 na janela | Lista as B71 com o status, o `B53_TIPGUI`, o `B53_ALIMOV` e a tabela de itens (BE2, BQV ou B4C), e os procedimentos de alto custo de cada guia. Falha se houver `CAMPO_GUIA_INEXISTENTE` (corrigir o mapa em `fCampoGuia`), `CAMPO_B53_INEXISTENTE` (`B53_TIPGUI`/`B53_ALIMOV` fora do dicionário) ou erro na consulta dos itens |
+| B71 na janela | Lista as B71 com o status, o `B53_TIPO` e a tabela de itens (BE2, BQV ou B4C) e, para cada guia, a chave da busca e todos os procedimentos lançados (`[BE2] codpad codigo - descrição \| qtd \| valor`, com `\| ALTO CUSTO` nos de alto custo). Falha se houver `CAMPO_GUIA_INEXISTENTE` (corrigir o mapa em `fCampoGuia`), `CAMPO_B53_INEXISTENTE` (`B53_TIPO` fora do dicionário) ou erro na consulta dos itens |
 | API + token + SFTP | O job pede um arquivo que não existe; o esperado é a API responder "não encontrado no SFTP". Outra mensagem indica API fora do alcance do AppServer, token diferente (401) ou SFTP inacessível |
 | SMTP | Conexão/autenticação com os `MV_REL*` |
 
@@ -79,8 +79,10 @@ Cenários da camada de procedimentos:
 | IA ligada, procedimento não citado no anexo | Detecção "Procedimento", observação "nao citado nos anexos" |
 | IA ligada, guia sem anexo | Detecção "Procedimento", observação "sem anexo para confirmar" |
 | IA ligada, medicamento só no anexo | Detecção "Anexo (IA)", valor na guia "nao consta" |
-| `B53_TIPGUI` 11 com `B53_ALIMOV = B4Q` | Log da B71 com `itens BQV` |
-| `B53_TIPGUI` 1, 2, 3, 4, 5 ou 7 / outro | Log da B71 com `itens BE2` / `itens B4C` |
+| `B53_TIPO` 11 em B71 com `B71_ALIMOV = B4Q` | Log da B71 com `itens BQV` e os procedimentos com `[BQV]` |
+| `B53_TIPO` 1, 2, 3, 4, 5 ou 7 / outro | Log da B71 com `itens BE2` / `itens B4C` e os procedimentos com `[BE2]` / `[B4C]` |
+| B71 da BEA com `BEA_GUIORI` vazio | Log `guia <chave> pela chave da BEA` (antes: "campo da guia vazio") e itens da BE2 com `chave da BEA recno <B71_RECMOV>` |
+| Guia com itens, mas log `nenhum procedimento lancado` | Chave ou tabela de itens diferente na base: conferir com `levantamento/07-b53-tipgui-itens.sql` (consulta 3) |
 
 ## 7. Cenários de falha (recomendado)
 

@@ -9,7 +9,7 @@
 #DEFINE __LOG_DIR    "\logpls\"
 #DEFINE __LOG_ARQ    "alto_custo"
 
-#DEFINE __MAIL_TO    "michel.ramos@oestesaude.com.br"
+#DEFINE __MAIL_TO    "alencar.magalhaes@oestesaude.com.br"
 
 // URL da API: __URL_PROD no ambiente __ENV_PROD, __URL_DEV em qualquer outro (ver fApiUrl)
 #DEFINE __ENV_PROD   "CYWSXT_PROD"

@@ -6,6 +6,7 @@ Dependências da API: **Node 20+** (a imagem Docker e o `setup-linux.sh` usam No
 |---------|-----|
 | [docker-compose.yml](docker-compose.yml) | Compose base (produção): builda `api-extracao-texto/Dockerfile` e sobe a API |
 | [docker-compose.dev.yml](docker-compose.dev.yml) | Override de dev: monta `api-extracao-texto/test` em `/app/test` |
+| [producao.env](producao.env) | Porta e IP de produção para o compose (`--env-file`): `10.1.5.14:6177`. Sem segredos |
 | [setup-linux.sh](setup-linux.sh) | Provisiona Ubuntu/Debian (apt + NodeSource + pm2 + dirs) |
 | [verify-infra.sh](verify-infra.sh) | Checa Node ≥ 20, pdftoppm, tesseract `por`, pm2 |
 | [ecosystem.config.cjs](ecosystem.config.cjs) | Configuração pm2 |
@@ -15,8 +16,8 @@ Dependências da API: **Node 20+** (a imagem Docker e o `setup-linux.sh` usam No
 Pré-requisito: `api-extracao-texto/.env` (copiar de `.env.example`, com `API_TOKEN` de 32+ caracteres e senhas do SFTP). Sem ele o compose não sobe; com token fraco ou sem `SFTP_*_HOSTKEY`, a API recusa subir e o erro aparece em `docker logs api-extracao-texto`.
 
 ```bash
-# produção (porta que o Protheus CYWSXT_PROD chama)
-API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build
+# produção: 10.1.5.14:6177 (infra/producao.env), que o Protheus CYWSXT_PROD chama
+docker compose --env-file infra/producao.env -f infra/docker-compose.yml up -d --build
 
 # dev/testes (porta 3010 + pasta test/ montada)
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
@@ -47,7 +48,7 @@ O script cria:
 ## Rede / Protheus
 
 - Desenvolvimento: API na porta **3010** (a 3000 já é usada pelo `movianexo-api`).
-- Produção: API em `10.1.5.14`, porta **6177** (pm2 `--env production` ou Docker com `API_HOST_PORT=6177`).
+- Produção: API em `10.1.5.14`, porta **6177** (pm2 `--env production` ou Docker com `--env-file infra/producao.env`).
 - A URL fica no fonte do Protheus, escolhida pelo ambiente: `CYWSXT_PROD` chama `http://10.1.5.14:6177/verificar-sftp`; qualquer outro chama `http://localhost:3010/verificar-sftp` (API na mesma máquina do AppServer).
 - pm2: `API_TOKEN` fica só no `.env`; o `ecosystem.config.cjs` não o define, porque variável do pm2 venceria o `.env`.
 - A máquina da API precisa de saída para o SFTP (prod: porta `2323`; dev: porta `1151`).

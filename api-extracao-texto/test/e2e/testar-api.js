@@ -226,6 +226,12 @@ async function testarConfig() {
       (!IA_TESTE || (cfg.json.ia === true && !!cfg.json.modelo)),
     `HTTP ${cfg.status}, ${JSON.stringify(cfg.json)}`,
   );
+  resultado(
+    'config: criterio altcus, ou valor com valorMin > 0',
+    !!cfg.json &&
+      (cfg.json.criterio === 'altcus' || (cfg.json.criterio === 'valor' && cfg.json.valorMin > 0)),
+    `criterio=${cfg.json && cfg.json.criterio}, valorMin=${cfg.json && cfg.json.valorMin}`,
+  );
 }
 
 async function main() {

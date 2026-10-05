@@ -14,8 +14,9 @@ O ADVPL/TLPP não lê PDF nem faz OCR, e o `FTPConnect` não fala SFTP. Por isso
 ```
 Scheduler (15 min) → U_OSMEDALTC
   1. Lê Z_NOTIENCA (último R_E_C_N_O_ da B71 já verificado)
-  2. GET /config na API: IA ligada ou não (IA_HABILITADA no .env da API)
-  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1', BR8_CODPAD em __CODPAD_BR8) LEFT JOIN BA8 + valor de tabela (BD4)
+  2. GET /config na API: IA ligada ou não (IA_HABILITADA) e critério dos medicamentos (MEDICAMENTO_CRITERIO) no .env da API
+  3. Carrega os medicamentos: BR8 (BR8_CODPAD em __CODPAD_BR8 e, pelo critério, BR8_ALTCUS = '1' ou
+     valor de tabela BD4 vigente > MEDICAMENTO_VALOR_MIN) LEFT JOIN BA8 + valor de tabela (BD4)
   4. B71 novas: R_E_C_N_O_ > Z_NOTIENCA, B71_DATMOV = hoje, B71_CODDEP = '012'
   5. Para cada B71:
        B71_ALIMOV + B71_RECMOV → tabela origem (BEA | BE4 | B44 | B4Q | B4A) → número da guia
@@ -47,7 +48,7 @@ Regras importantes:
 - **A IA (Claude) é opcional.** Com `IA_HABILITADA=true`, o Claude lê o texto de cada anexo e aponta os medicamentos da lista citados pelo nome do cadastro, nome comercial, princípio ativo, abreviação ou com erro de OCR. Ela confirma os procedimentos ("Procedimento + IA") e acrescenta os medicamentos citados que não foram lançados ("Anexo (IA)"); procedimento não citado continua no alerta. Confiança alta ou média entra no alerta; baixa só no log. Com `IA_HABILITADA=false`, os anexos não são enviados e o alerta sai só pelos procedimentos. Antes do envio, a API mascara CPF, CNS, carteirinha, telefone, e-mail, data de nascimento, os nomes do beneficiário e do solicitante da guia (enviados pelo job) e o que vier depois de rótulos como "Paciente:". O texto do anexo não volta para o Protheus. Detalhes em [configuracoes.md](configuracoes.md#11-ia-claude-confirmação-nos-anexos-opcional).
 - **Log.** Tudo o que o job registra vai para `\logpls\alto_custo_AAAAMMDD.log` no RootPath (um arquivo por dia, criado sozinho, gravado pela função padrão do PLS `PlsPtuLog`, com gravação própria como fallback) e para o console do AppServer. Os arquivos antigos são apagados manualmente.
 
-O e-mail traz guia, tipo da guia (B53), origem, recno da B71 e, por item: código, descrição BR8, detecção (Procedimento, Procedimento + IA ou Anexo (IA)), quantidade e valor na guia (quantidade solicitada × valor unitário dos itens), valor de tabela (BD4, vigência mais recente) e, com a IA ligada, termo encontrado, anexo e a observação da IA (confirmação, confiança e motivo). Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
+O e-mail traz guia, tipo da guia (B53), origem, recno da B71 e, por item: código, descrição BR8, detecção (Procedimento, Procedimento + IA ou Anexo (IA)), quantidade e valor na guia (quantidade solicitada × valor unitário dos itens), valor de tabela (BD4, vigência mais recente; uma linha por tabela de preço, com código, descrição e Tp.Pad.Saude da BF8 e a unidade) e, com a IA ligada, termo encontrado, anexo e a observação da IA (confirmação, confiança e motivo). Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
 
 ## Configuração inicial
 

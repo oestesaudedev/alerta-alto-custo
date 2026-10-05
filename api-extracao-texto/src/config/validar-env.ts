@@ -20,6 +20,14 @@ export function provedorIa(valor: unknown): string {
   return String(valor ?? '').trim().toLowerCase() || 'anthropic';
 }
 
+// Critério do job para a lista de medicamentos: altcus = BR8_ALTCUS = '1'; valor = valor de tabela BD4 > MEDICAMENTO_VALOR_MIN
+export const CRITERIOS_MEDICAMENTO = ['altcus', 'valor'] as const;
+export type CriterioMedicamento = (typeof CRITERIOS_MEDICAMENTO)[number];
+
+export function criterioMedicamento(valor: unknown): string {
+  return String(valor ?? '').trim().toLowerCase() || 'altcus';
+}
+
 // Chamado pelo ConfigModule na subida: a API não sobe com configuração insegura.
 export function validarEnv(config: Record<string, unknown>): Record<string, unknown> {
   const erros: string[] = [];
@@ -55,6 +63,13 @@ export function validarEnv(config: Record<string, unknown>): Record<string, unkn
         erros.push(`${nome} inválido: esperado número maior que zero`);
       }
     }
+  }
+
+  const criterio = criterioMedicamento(config.MEDICAMENTO_CRITERIO);
+  if (!(CRITERIOS_MEDICAMENTO as readonly string[]).includes(criterio)) {
+    erros.push(`MEDICAMENTO_CRITERIO inválido: ${criterio} (suportados: ${CRITERIOS_MEDICAMENTO.join(', ')})`);
+  } else if (criterio === 'valor' && !(Number(texto('MEDICAMENTO_VALOR_MIN')) > 0)) {
+    erros.push('MEDICAMENTO_VALOR_MIN inválido: esperado número maior que zero (obrigatório com MEDICAMENTO_CRITERIO=valor)');
   }
 
   if (erros.length) {

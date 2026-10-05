@@ -31,7 +31,9 @@ ORDER BY B71.R_E_C_N_O_;
 --    Para reprocessar a B71 escolhida: Z_NOTIENCA = B71_RECNO - 1 (SX6 ou U_tstMEDALTC("<valor>")).
 
 -- 4) Medicamentos que o job procura e os termos mais provaveis de casar no texto
---    Mesmo filtro de fCarregaMed(): BR8_CODPAD em __CODPAD_BR8; item sem BA8 entra so com a BR8_DESCRI
+--    Mesmo filtro de fCarregaMed() com MEDICAMENTO_CRITERIO=altcus: BR8_CODPAD em __CODPAD_BR8; item sem BA8
+--    entra so com a BR8_DESCRI. Com MEDICAMENTO_CRITERIO=valor, trocar o "AND BR8.BR8_ALTCUS = '1'" pelo
+--    EXISTS da consulta 6 de levantamento/05-campos-valor.sql (contagem do mesmo filtro)
 SELECT DISTINCT BR8.BR8_CODPAD, BR8.BR8_CODPSA, BR8.BR8_DESCRI,
        COALESCE(BA8.BA8_DPRINC, ' ') AS BA8_DPRINC, COALESCE(BA8.BA8_DESCRI, ' ') AS BA8_DESCRI
 FROM BR8010 BR8

@@ -94,6 +94,16 @@ Infra (fase 2): scripts em [`infra/`](../infra/README.md) — `setup-linux.sh` /
 - [ ] SQL executada
 - [ ] Literal `ALTCUS` e join confirmados
 
+### 5.3 Critério por valor (`MEDICAMENTO_CRITERIO=valor`, `05-campos-valor.sql` consultas 5 e 6)
+
+| Pergunta | Resposta |
+|----------|----------|
+| `MEDICAMENTO_VALOR_MIN` escolhido (R$) | |
+| Qtd. medicamentos acima do valor (≤ 5000 com a IA ligada) | |
+| Índice da BD4 começando por `FILIAL+CODTAB+CDPADP+CODPRO+CODIGO` existe? | Sim / Não |
+
+- [ ] Só se for usar o critério por valor
+
 ## 6. Assinatura do levantamento
 
 | Campo | Valor |

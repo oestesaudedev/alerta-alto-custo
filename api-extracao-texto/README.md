@@ -1,6 +1,6 @@
 # API NestJS — extração de texto (PDF / OCR)
 
-Usada pelo job Protheus `OSMEDALTC` via `POST /verificar-sftp`: baixa o anexo do SFTP, extrai o texto e pede ao Claude os medicamentos de alto custo citados. O `POST /extrair-sftp` fica para o fonte anterior do job. O `POST /extrair` e o `POST /verificar` (Base64) existem só para os testes e ficam desligados por padrão (`EXTRAIR_BASE64`).
+Usada pelo job Protheus `OSMEDALTC`: `GET /config` informa se a IA está ligada (`IA_HABILITADA`) e, com ela ligada, `POST /verificar-sftp` baixa o anexo do SFTP, extrai o texto e pede ao Claude os medicamentos de alto custo citados. Com a IA desligada, o job alerta só pelos procedimentos da guia e não chama o `/verificar-sftp`. O `POST /extrair-sftp` fica para o fonte anterior do job. O `POST /extrair` e o `POST /verificar` (Base64) existem só para os testes e ficam desligados por padrão (`EXTRAIR_BASE64`).
 
 ## Requisitos
 
@@ -39,7 +39,7 @@ Variáveis (`.env`):
 | `SFTP_PROD_PASSWORD` / `SFTP_DEV_PASSWORD` | — | Senha do SFTP. **Só no `.env`** (fora do git) |
 | `SFTP_PROD_HOSTKEY` / `SFTP_DEV_HOSTKEY` | — | Impressões digitais do servidor (`SHA256:...`, separadas por vírgula; valores no `.env.example`). Obrigatórias quando o `HOST` do perfil está preenchido. Chave diferente: `{ ok: false, erro: "chave do servidor SFTP ... não confere" }`. Obter: `ssh-keyscan -p PORTA HOST \| ssh-keygen -lf -` |
 | `SFTP_DIR` | `/` | Pasta dos anexos (`/dirdoc/co01/shared/`) |
-| `IA_HABILITADA` | `false` | `true` liga o Claude (ver [IA](#ia-claude)). **Obrigatório para o job**: com `false`, a API sobe com aviso no console e o `/verificar-sftp` responde "IA indisponivel" |
+| `IA_HABILITADA` | `false` | `true` liga o Claude (ver [IA](#ia-claude)). O job lê o valor pelo `GET /config`: com `false`, alerta só pelos procedimentos da guia e não envia anexos (o `/verificar-sftp`, se chamado, responde "IA indisponivel") |
 | `IA_PROVEDOR` | `anthropic` | Provedor da IA. Hoje só `anthropic`; outro valor impede a subida com `IA_HABILITADA=true` |
 | `ANTHROPIC_API_KEY` | — | Chave da Anthropic. Obrigatória com `IA_HABILITADA=true` (a API não sobe sem ela). **Só no `.env`** |
 | `IA_MODELO` | `claude-sonnet-5-5` | Modelo do Claude (`claude-haiku-4-5` é mais barato) |
@@ -80,9 +80,19 @@ Comportamento:
 - `.jpg/.jpeg/.png/.tif/.bmp` → Tesseract `por`
 - Temporários apagados após a requisição
 
-### `POST /verificar-sftp` (usado pelo job Protheus)
+### `GET /config` (usado pelo job Protheus)
 
-Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e manda ao Claude o texto mascarado e a lista de medicamentos. A IA é a única verificação. Devolve os medicamentos achados, sem o texto:
+Mesmos headers (token obrigatório; sem ele, HTTP 401). O job chama uma vez por execução para saber se envia os anexos:
+
+```json
+{ "ok": true, "ia": true, "modelo": "claude-sonnet-5-5" }
+```
+
+Com `IA_HABILITADA=false`: `{ "ok": true, "ia": false }`. Mudar o valor exige reiniciar a API. Se o job não conseguir ler o `/config` (API fora, token errado, API antiga sem o endpoint), a execução termina sem avançar o `Z_NOTIENCA`.
+
+### `POST /verificar-sftp` (usado pelo job Protheus com a IA ligada)
+
+Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e manda ao Claude o texto mascarado e a lista de medicamentos. Devolve os medicamentos achados, sem o texto; o job junta esses achados aos procedimentos de alto custo da guia:
 
 ```json
 {
@@ -105,8 +115,9 @@ Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e m
 ```
 
 - `medicamentos` é obrigatório e não pode ser vazio (HTTP 400); até 5000 itens, com `descricao` e cada termo de até 1000 caracteres. `mascarar` é opcional (até 20 nomes).
-- Classificação ([`classificacao-ia.ts`](src/extracao/verificacao/classificacao-ia.ts)): confiança `alta` ou `media` vira achado (origem `ia`); `baixa` vira aviso `confianca-baixa`. Texto maior que `IA_MAX_CHARS` gera o aviso `texto-cortado` (código vazio).
-- Falha da IA (timeout, chave inválida, `IA_HABILITADA=false`): `{ "ok": false, "erro": "IA indisponivel: ..." }`. O job trata como falha temporária e retoma a B71 na próxima execução.
+- Só medicamento pedido de forma explícita para o paciente (contexto `solicitado`: "solicito", "prescrevo", receita com posologia, pedido de autorização) chega à classificação. Menções `informativo` (folheto, bula, termo de consentimento, lista de reações adversas), `historico` ("paciente em uso de", uso contínuo, uso anterior, suspenso, alergia; estar em uso não é pedido de cobertura) e `outro` são descartadas na API, sem aviso; o log da API mostra só a contagem.
+- Classificação ([`classificacao-ia.ts`](src/extracao/verificacao/classificacao-ia.ts)): confiança `alta` ou `media` vira achado (origem `ia`); `baixa` vira aviso `confianca-baixa`. A confiança mede só a identificação do nome (exato, nome comercial, erro de OCR). Texto maior que `IA_MAX_CHARS` gera o aviso `texto-cortado` (código vazio).
+- Falha da IA (timeout, chave inválida, `IA_HABILITADA=false`): `{ "ok": false, "erro": "IA indisponivel: ..." }`. O job trata como falha temporária e retoma a B71 na próxima execução (com a IA desligada ele nem chama este endpoint; o erro só aparece se o flag mudar no meio de uma execução).
 - Erros da extração iguais aos do `/extrair-sftp` (`{ ok: false, erro }`), antes de chamar a IA.
 - Campos que não existem mais (`ia`, `retornarTexto`, do fonte intermediário do job) são recusados com HTTP 400.
 
@@ -150,7 +161,7 @@ Com a lista e a extração OK, a resposta ganha o campo `ia`:
 {
   "ok": true, "texto": "...", "metodo": "pdf-parse",
   "ia": { "ok": true, "modelo": "claude-sonnet-5-5", "achados": [
-    { "codigo": "90000001", "termo": "REMICADE", "confianca": "media", "motivo": "nome comercial de infliximabe" }
+    { "codigo": "90000001", "termo": "REMICADE", "contexto": "solicitado", "confianca": "media", "motivo": "prescrito na receita, nome comercial de infliximabe" }
   ] }
 }
 ```
@@ -161,10 +172,10 @@ Com a lista e a extração OK, a resposta ganha o campo `ia`:
   - os nomes e a matrícula do campo opcional `mascarar` (o job envia beneficiário, solicitante e matrícula da guia): cada parte do nome com 3+ letras, sem acento e tolerando I/l/1, O/0, S/5 do OCR;
   - o que vem depois de rótulos no início da linha ou coluna ("Paciente:", "Beneficiário:", "Nome da mãe:", "Médico solicitante:").
 
-  Palavras dos medicamentos da lista nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados, corte em `IA_MAX_CHARS` e falha do provedor; o `test:verificacao` confere a classificação dos achados e a falha da IA virando erro.
-- A lista de medicamentos vai no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo, e códigos fora da lista são descartados.
+  Palavras dos medicamentos da lista nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados (inclusive o descarte do que não é `solicitado`), corte em `IA_MAX_CHARS` e falha do provedor; o `test:verificacao` confere a classificação dos achados e a falha da IA virando erro.
+- A lista de medicamentos vai no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo (`codigo`, `termo`, `contexto`, `confianca`, `motivo`), e códigos fora da lista ou com contexto diferente de `solicitado` são descartados.
 - A chamada ao Claude roda fora da fila de OCR (`EXTRACAO_CONCORRENCIA`).
-- O log registra modelo, quantidade de achados, tempo e tokens (sem texto do anexo).
+- O log registra modelo, quantidade de achados e de não solicitados, tempo e tokens (sem texto do anexo).
 
 ## Código
 
@@ -173,7 +184,7 @@ Em `src/extracao/`:
 | Peça | Papel |
 |------|-------|
 | `extracao.service.ts` | Orquestra a extração: valida o nome, baixa do SFTP, escolhe o extrator pela extensão e chama a IA (`/extrair*`) |
-| `verificacao/` | `/verificar*`: extração, chamada à IA e classificação dos achados (`classificacao-ia.ts`) |
+| `verificacao/` | `/verificar*`: extração, chamada à IA e classificação dos achados (`classificacao-ia.ts`); `GET /config` (`config.controller.ts`) |
 | `extratores/` | Strategy por formato: `PdfExtrator` (pdf-parse, com OCR de fallback) e `ImagemExtrator`. Formato novo: classe que implementa `Extrator`, incluída em `EXTRATORES` no `extracao.module.ts` |
 | `ocr/` | `MotorOcr` e a implementação `TesseractOcr`, usada pelos dois extratores |
 | `ia/` | `IaService` (prompt, mascaramento, validação dos achados) e a porta `ModeloIa`, com o adapter `ClaudeAdapter`. Provedor novo: outro adapter, escolhido por `IA_PROVEDOR` em `modelo-ia.factory.ts` |
@@ -186,7 +197,7 @@ Em [`test/e2e/`](test/e2e/):
 | Arquivo | Uso |
 |---------|-----|
 | `gerar-amostras.js` | Gera `texto.pdf`, `imagem.jpg`, `escaneado.pdf` e `comercial.pdf` (só nomes comerciais) em `test/e2e/amostras/` (precisa de `pdftoppm`) |
-| `testar-api.js` | Envia as amostras, confere texto e `metodo`, testa 401/400/extensão inválida, o campo `ia` e o `/verificar` (lista obrigatória, campo `ia` recusado, descrição de 500 caracteres aceita; sem IA, "IA indisponivel"). Com `IA_TESTE=true`, exige que o Claude ache infliximabe e ustequinumabe na `comercial.pdf`, no `/extrair` e nos achados do `/verificar` |
+| `testar-api.js` | Envia as amostras, confere texto e `metodo`, testa 401/400/extensão inválida, o campo `ia`, o `/verificar` (lista obrigatória, campo `ia` recusado, descrição de 500 caracteres aceita; sem IA, "IA indisponivel") e o `GET /config` (401 sem token, `ia` booleano). Com `IA_TESTE=true`, exige que o Claude ache infliximabe e ustequinumabe na `comercial.pdf`, no `/extrair` e nos achados do `/verificar`, e `ia: true` no `/config` |
 | `rodar-fase4.ps1` | Windows: sobe a API no Docker, gera as amostras e roda os testes, incluindo `test/testar-mascara.js`, `test/testar-ia.js` e `test/testar-verificacao.js` (`-Ia` liga o `IA_TESTE`) |
 | `curl-exemplos.sh` | Linux: envia arquivos com curl |
 

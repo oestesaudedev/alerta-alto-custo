@@ -18,16 +18,16 @@ Parâmetro SX6 **`Z_NOTIENCA`** = último `R_E_C_N_O_` da **B71** já verificado
 
 Na etapa 1: cadastrar `Z_NOTIENCA` na SX6 se não existir (inicial `"0"` ou recno de partida).
 
-## Medicamentos de alto custo — BR8 INNER JOIN BA8
+## Medicamentos de alto custo — BR8 LEFT JOIN BA8
 Quem indica alto custo é a **BR8**, pelo campo **`BR8_ALTCUS`**. A **BA8** amarra o item na tabela dinâmica de eventos e fornece descrições auxiliares ao match.
 
 `fCarregaMed()` (uma vez por execução):
 - `FROM` BR8
-- `INNER JOIN` BA8 em `BA8_CDPADP = BR8_CODPAD` **e** `BA8_CODPRO = BR8_CODPSA` **e** `BA8.D_E_L_E_T_ = ' '`
+- `LEFT JOIN` BA8 em `BA8_CDPADP = BR8_CODPAD` **e** `BA8_CODPRO = BR8_CODPSA` **e** `BA8.D_E_L_E_T_ = ' '` (`SELECT DISTINCT`, colunas da BA8 com `COALESCE`)
 - `WHERE` `BR8_ALTCUS = '1'` **e** `BR8.D_E_L_E_T_ = ' '`
 - Array (normalizado com `Upper(FwNoAccent(AllTrim()))`): `BR8_CODPSA`, `BR8_DESCRI` (match principal); `BA8_DESCRI`, `BA8_DPRINC` (se preenchidos)
 
-Documentação do campo: `BR8_ALTCUS` = `'1'` Sim / `'0'` Não. Join padrão: `BA8_CDPADP` + `BA8_CODPRO`. Na etapa 1, confirmar na base com `levantamento/03-amostra-br8-ba8.sql`. Itens só na BR8 sem BA8 **não entram** (`INNER JOIN`).
+Documentação do campo: `BR8_ALTCUS` = `'1'` Sim / `'0'` Não. Join padrão: `BA8_CDPADP` + `BA8_CODPRO`. Na etapa 1, confirmar na base com `levantamento/03-amostra-br8-ba8.sql`. Itens só na BR8 sem BA8 **entram** só com a `BR8_DESCRI` e ficam sem valor de tabela (`LEFT JOIN`).
 
 ## Fluxo da consulta
 
@@ -85,14 +85,32 @@ Não usa o `UNION ALL` com `INNER JOIN`: ele só traria B71 com anexo, e o water
 | 3 | API de extração | Pasta [`api-extracao-texto/`](api-extracao-texto/) NestJS: `POST /extrair`, `POST /extrair-sftp`, token, README, Docker | Pronta — rodar em localhost:3010 | 2 |
 | 4 | Teste da API | [`api-extracao-texto/test/e2e/`](api-extracao-texto/test/e2e/): PDF texto, PDF escaneado e JPG + 401/400 + SFTP | Concluída — 12/12 testes OK no Docker (inclui download real do SFTP) | 3 |
 | 5 | Fonte TLPP: esqueleto | [`totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp`](totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp) com `#DEFINE`s, job, `dbgMEDALTC` e leitura de `Z_NOTIENCA` | Pronto — compilar e rodar `U_dbgMEDALTC` | 1 |
-| 6 | Fonte TLPP: consulta + meds | `fConsulta()` (watermark B71) e `fCarregaMed()` (**BR8 INNER JOIN BA8**, `BR8_ALTCUS`) | Pronto — compilar e conferir o log de `U_dbgMEDALTC` | 5 |
+| 6 | Fonte TLPP: consulta + meds | `fConsulta()` (watermark B71) e `fCarregaMed()` (**BR8 LEFT JOIN BA8**, `BR8_ALTCUS`) | Pronto — compilar e conferir o log de `U_dbgMEDALTC` | 5 |
 | 7 | Download SFTP | Feito pela API: `POST /extrair-sftp` baixa `ACB_OBJETO` de `SFTP_DIR` com as credenciais do `.env` | Concluída (na API) — o TLPP não baixa arquivo | 3 |
 | 8 | Fonte TLPP: integração | `fExtraiTexto(ACB_OBJETO)`: POST `{arquivo}` em `/extrair-sftp` via `FWRest` | Pronto — testar com a API alcançável pelo AppServer | 3, 5 |
 | 9 | Fonte TLPP: regra + e-mail | `fBuscaMed()`, `fEnviaEmail()` e **gravação de `Z_NOTIENCA`** após cada B71 | Pronto — validar no teste integrado (etapa 10) | 6, 8 |
 | 10 | Teste integrado | Pasta [`teste-integrado/`](teste-integrado/): roteiro, `U_chkMEDALTC` (diagnóstico sem gravar), `U_tstMEDALTC` (2 execuções + conferência do watermark), `conferencia.sql` | Artefatos prontos — executar no Protheus de teste | 4, 9 |
 | 11 | Implantação | Pasta [`implantacao/`](implantacao/): roteiro (API em produção, RPO, SX6, Scheduler 15 min, monitoramento, rollback) e `monitoramento.sql`. URL da API por ambiente no fonte (`CYWSXT_PROD` → `10.1.5.14:6177`); pm2 sem `API_TOKEN` | Artefatos prontos — executar após a etapa 10 aprovada | 10 |
 
+| 12 | Camada de procedimentos antes da IA | Procedimentos de alto custo da guia (BE2/BQV/B4C por `B53_TIPO` + `B71_ALIMOV`) e IA opcional via `IA_HABILITADA` (`GET /config`). Plano em [`planejamentos/camada-procedimentos-antes-da-ia.md`](planejamentos/camada-procedimentos-antes-da-ia.md) | Implementada — validar `B53_TIPO` com `levantamento/07-b53-tipgui-itens.sql` e repetir o teste integrado com IA ligada e desligada | 10 |
+
 As etapas 2-4 e 7 (API) e 5-6 (TLPP) podem andar em paralelo. As duas frentes se juntam na etapa 8.
+
+### Etapa 12 — camada de procedimentos antes da IA
+
+Para cada B71, depois de resolver a guia, o job lê o `B53_TIPO` e, com o `B71_ALIMOV` (tabela origem da movimentação), verifica os procedimentos lançados na guia antes de qualquer chamada à IA:
+
+| `B53_TIPO` | Itens | Chave (= `B53_NUMGUI`) | Qtd / valor unitário |
+|---|---|---|---|
+| 1, 2, 3, 4, 5, 7 | BE2 | `OPEMOV + ANOAUT + MESAUT + NUMAUT` | `BE2_QTDSOL` / `BE2_VLRAPR` |
+| 11 com `B71_ALIMOV = B4Q` | BQV | `CODOPE + ANOINT + MESINT + NUMINT` | `BQV_QTDSOL` / `BQV_VLRAPR` |
+| demais | B4C | `OPEMOV + ANOAUT + MESAUT + NUMAUT` | `B4C_QTDSOL` / `B4C_VLRUNT` |
+
+- Item de alto custo: `BR8_ALTCUS = '1'` no `CODPAD + CODPRO` (`fProcAltoCusto`).
+- IA desligada (`GET /config` → `ia: false`): e-mail só com os procedimentos; anexos não são enviados.
+- IA ligada: o `/verificar-sftp` roda nos anexos como antes e `fMescla` junta os resultados — procedimento confirmado ("Procedimento + IA"), não confirmado ("nao citado nos anexos" / "sem anexo para confirmar") e medicamento só no anexo ("Anexo (IA)").
+- Substitui `fValorGuia` / `fCfgItens`, que usavam campos inexistentes na BQV (`BQV_OPEMOV`...) e na B4C (`B4C_VLRAPR`).
+- Sem o `B53_TIPO` no dicionário, a B71 fica `CAMPO_B53_INEXISTENTE` e o watermark não avança.
 
 ## Parte 1: Fonte TLPP `totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp`
 
@@ -112,7 +130,7 @@ O filtro de medicamentos **não** usa mais `__TAB_MEDIC` / `BR8_CODPAD` como cri
 - `User Function OSMEDALTC(aJob)`: copia o padrão de `OS_PJBENCAM.tlpp:29-79`. Faz `RpcSetEnv` se `Select("SX2") <= 0`, depois `LockByName("OSMEDALTC",.T.,.F.)`, o processamento dentro de `BEGIN SEQUENCE/RECOVER`, e por fim `UnLockByName` e `RpcClearEnv`.
 - `User Function dbgMEDALTC()`: chama `U_OSMEDALTC({'01','01'})`, para depuração. É a mesma convenção de `FSEmailBoleto.tlpp:70`.
 - Leitura inicial de `Z_NOTIENCA` via `SuperGetMV`.
-- `fCarregaMed()`: BR8 `INNER JOIN` BA8, `WHERE BR8_ALTCUS = '1'`. Devolve um item por `BR8_CODPSA` com os termos de busca (`BR8_DESCRI`, `BA8_DESCRI`, `BA8_DPRINC`) normalizados com `Upper(FwNoAccent(AllTrim()))`, sem repetição. Sem nenhum medicamento, o job encerra sem avançar o watermark.
+- `fCarregaMed()`: BR8 `LEFT JOIN` BA8, `WHERE BR8_ALTCUS = '1'`. Devolve um item por `BR8_CODPSA` com os termos de busca (`BR8_DESCRI`, `BA8_DESCRI`, `BA8_DPRINC`) normalizados com `Upper(FwNoAccent(AllTrim()))`, sem repetição. Sem nenhum medicamento, o job encerra sem avançar o watermark.
 - `fConsulta()`: ver "Fluxo da consulta". Devolve `{nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus}` por B71, com `aAnexos = {{ACB_CODOBJ, ACB_OBJETO}, ...}`. Todas as SQLs filtram `*_FILIAL = xFilial(...)`. O filtro de debug `__CODOBJ` é aplicado na SQL dos anexos.
 - Laço sobre os registros (agrupados por B71 / `R_E_C_N_O_`):
   1. Para cada `ACB_OBJETO` preenchido: `fExtraiTexto(AllTrim(ACB_OBJETO))` — POST JSON `{arquivo}` em `__API_URL` (`/extrair-sftp`) via `FWRest`, header `Authorization: Bearer __API_TOKEN`, `SetTimeOut(120)`. Padrão de `FSWhatsapp.tlpp:300-427`. Texto via `JsonObject():FromJson()`. A API baixa o arquivo do SFTP; nada é gravado no AppServer.
@@ -120,7 +138,7 @@ O filtro de medicamentos **não** usa mais `__TAB_MEDIC` / `BR8_CODPAD` como cri
   3. Se achar medicamento: `fEnviaEmail()` — **um e-mail por B71**, com todos os anexos e medicamentos dela. Envio por `TMailManager`/`TMailMessage` com o SMTP padrão do Protheus (`MV_RELSERV`, `MV_RELACNT`, `MV_RELPSW`, `MV_RELAUTH`, `MV_RELSSL`, `MV_RELTLS`, `MV_RELFROM`). Assunto: `[Alto custo] Guia <guia> - <n> medicamento(s) identificado(s)`. Corpo HTML: guia (`B53_NUMGUI`), origem (`B71_ALIMOV` + recno), recno da B71 e tabela com código, descrição BR8, **valor de tabela**, **valor na guia**, termo encontrado e anexo. **Não** inclui trecho do texto do anexo (dados de saúde).
      - Alto custo: só `BR8_ALTCUS = '1'`. O valor não entra na decisão.
      - Valor de tabela (`fCarregaVlrTab`): BR8 → BA8 → **BD4** (`BA8_CODTAB + BA8_CDPADP + BA8_CODPRO = BD4_CODTAB + BD4_CDPADP + BD4_CODPRO`, confirmado no dicionário), campo `BD4_VALREF`. Sempre a **vigência mais recente**: para cada tabela + unidade (`BD4_CODIGO`), o maior `BD4_VIGINI <= hoje`; `BD4_VIGFIM` não é considerado e vigências futuras ficam de fora. Mais de uma tabela/unidade: listadas com " / ". Sem valor: `sem valor na tabela`.
-     - Valor na guia (`fValorGuia` + `fCfgItens`): soma do campo de valor dos itens da guia de origem (BEA→BE2, BE4→BEJ, B44→B45, B4Q→BQV, B4A→B4C) com o mesmo `CODPAD`+`CODPRO`. Medicamento só no anexo: `nao consta`.
+     - Valor na guia: desde a etapa 12, vem dos procedimentos da guia (`fProcAltoCusto`, tabela de itens por `B53_TIPO` + `B71_ALIMOV`): quantidade solicitada × valor unitário. Medicamento só no anexo: `nao consta`.
      - Tabela ou campo ausente no dicionário, ou erro na query: a coluna sai `n/d` e o job segue (não bloqueia o watermark). Confirmar os nomes com [`levantamento/05-campos-valor.sql`](levantamento/05-campos-valor.sql).
   4. Após a B71 verificada com sucesso: gravar `Z_NOTIENCA` com aquele `R_E_C_N_O_` (`PutMV`). Falha no SMTP conta como falha temporária: não avança e a B71 é retomada (o e-mail é tentado de novo).
   - `CAMPO_GUIA_INEXISTENTE` (erro de dicionário) também não avança: o job para nessa B71 até o mapeamento ser corrigido.
@@ -153,7 +171,7 @@ Scheduler Protheus (CFGX032): cadastrar `U_OSMEDALTC` com parâmetro `{'01','01'
 - Alias `B71_ALIMOV` inesperado: log + avançar watermark, sem abortar o job.
 - O job só verifica B71 do dia corrente. B71 que ficam pendentes na virada do dia (job parado ou falhando) não são processadas depois; o job registra `WARN` com a quantidade (`fAvisaAtrasadas`) para conferência manual.
 - Match por descrição depende do OCR e de `BR8_DESCRI` / `BA8_DESCRI` / `BA8_DPRINC`.
-- Itens só na BR8 sem correspondente na BA8 **não entram** (`INNER JOIN`).
+- Itens só na BR8 sem correspondente na BA8 entram só com a `BR8_DESCRI` como termo e sem valor de tabela (`LEFT JOIN`).
 
 ## Verificação
 1. API NestJS: `api-extracao-texto/test/e2e/rodar-fase4.ps1` (Windows/Docker) ou `npm run test:amostras && npm run test:e2e` / `curl-exemplos.sh` (Linux). Confere o texto e o `metodo` de um PDF de texto, um PDF escaneado e um JPG, e o `/extrair-sftp` (401/400, nome com caminho, arquivo inexistente e, com `SFTP_ARQUIVO=<nome>`, um download real).

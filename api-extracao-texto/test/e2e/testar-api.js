@@ -12,6 +12,7 @@ const API_URL = process.env.API_URL || 'http://localhost:3010/extrair';
 const API_SFTP_URL = API_URL.replace(/\/extrair$/, '/extrair-sftp');
 const API_VERIFICAR_URL = API_URL.replace(/\/extrair$/, '/verificar');
 const API_VERIFICAR_SFTP_URL = API_URL.replace(/\/extrair$/, '/verificar-sftp');
+const API_CONFIG_URL = API_URL.replace(/\/extrair$/, '/config');
 const API_TOKEN = process.env.API_TOKEN || '';
 const AMOSTRAS_DIR = process.env.AMOSTRAS_DIR || path.join(__dirname, 'amostras');
 const SFTP_ARQUIVO = process.env.SFTP_ARQUIVO || '';
@@ -204,6 +205,29 @@ async function testarVerificacao() {
   );
 }
 
+// GET /config: o job lê daqui se a IA está ligada; com IA_TESTE ela precisa estar
+async function testarConfig() {
+  const get = async (token) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const res = await fetch(API_CONFIG_URL, { headers });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  };
+
+  const semToken = await get(null);
+  resultado('config: sem token → 401', semToken.status === 401, `HTTP ${semToken.status}`);
+
+  const cfg = await get(API_TOKEN);
+  resultado(
+    `config: ia booleano${IA_TESTE ? ' e ligada' : ''}`,
+    cfg.status === 200 &&
+      cfg.json &&
+      cfg.json.ok === true &&
+      typeof cfg.json.ia === 'boolean' &&
+      (!IA_TESTE || (cfg.json.ia === true && !!cfg.json.modelo)),
+    `HTTP ${cfg.status}, ${JSON.stringify(cfg.json)}`,
+  );
+}
+
 async function main() {
   if (!API_TOKEN) {
     console.error('Defina API_TOKEN com o mesmo valor do .env da API.');
@@ -222,6 +246,7 @@ async function main() {
   await testarAmostra('escaneado.pdf', 'ocr-pdf');
   await testarIa();
   await testarVerificacao();
+  await testarConfig();
 
   const semToken = await post({ nome: 'a.pdf', conteudoBase64: 'YQ==' }, null);
   resultado('sem token → 401', semToken.status === 401, `HTTP ${semToken.status}`);

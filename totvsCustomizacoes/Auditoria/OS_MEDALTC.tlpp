@@ -17,9 +17,13 @@
 #DEFINE __URL_DEV    "https://easily-honest-pamula.ngrok-free.dev"
 #DEFINE __API_PATH   "/verificar-sftp"
 #DEFINE __API_URL    fApiUrl()
+// GET que informa se a IA esta ligada no .env da API (IA_HABILITADA)
+#DEFINE __CFG_PATH   "/config"
 #DEFINE __API_TOKEN  SuperGetMV("Z_MEDAPIT", .F., "")
 
-#DEFINE __CODDEP     "012"
+// Departamentos (B71_CODDEP) verificados; {} = todos
+//#DEFINE __CODDEP     {"012"}
+#DEFINE __CODDEP     {}
 #DEFINE __CODOBJ     ""
 
 // Debug: B71_DATMOV fixo (AAAAMMDD) no lugar da data de hoje. Deixar "" em producao
@@ -44,7 +48,29 @@
 #DEFINE __I_TEXTOS   7
 #DEFINE __I_DATMOV   8
 #DEFINE __I_PESSOAS  9
-#DEFINE __I_TAM      9
+#DEFINE __I_TIPO     10
+#DEFINE __I_B53GUI   11
+#DEFINE __I_CHVBEA   12
+#DEFINE __I_TAM      12
+
+// Chave da BEA (= indice 1 da BE2 e formato do B53_NUMGUI), lida no registro do B71_RECMOV
+#DEFINE __CPO_CHVBEA {"BEA_OPEMOV", "BEA_ANOAUT", "BEA_MESAUT", "BEA_NUMAUT"}
+
+// Campo da B53 que, com o B71_ALIMOV, escolhe a tabela de itens da guia (fCfgProc)
+#DEFINE __CPO_B53    {"B53_TIPO"}
+// B53_TIPO cujos itens ficam na BE2 (cabecalho BEA); 11 com B71_ALIMOV = B4Q usa a BQV; os demais, a B4C
+#DEFINE __TIP_BE2    {1, 2, 3, 4, 5, 7}
+#DEFINE __TIP_BQV    11
+// B53_NUMGUI = OPEMOV + ANOAUT + MESAUT + NUMAUT: tamanho de cada parte, na ordem da chave dos itens
+#DEFINE __NUMGUI_PT  {4, 4, 2, 8}
+
+// Posicoes do mapa de itens devolvido por fCfgProc()
+#DEFINE __C_ALIAS    1
+#DEFINE __C_CHAVE    2
+#DEFINE __C_CODPAD   3
+#DEFINE __C_CODPRO   4
+#DEFINE __C_QTD      5
+#DEFINE __C_VALOR    6
 
 // Campos de nome lidos na tabela origem da guia (prefixo = alias), se existirem no dicionario
 #DEFINE __CPO_NOMES  {"_NOMUSR", "_NOMSOL"}
@@ -86,7 +112,10 @@
 // Termos com menos letras que isso nao vao para a IA (a descricao da BR8 sempre vai)
 #DEFINE __MIN_TERMO  4
 
-// Posicoes de cada medicamento encontrado por fBuscaMed()
+// Tabelas padrao (BR8_CODPAD) consideradas no alto custo
+#DEFINE __CODPAD_BR8 {"00", "20", "18"}
+
+// Posicoes de cada item de alto custo do alerta (fProcAltoCusto, fBuscaMed, fMescla)
 #DEFINE __F_CODPSA   1
 #DEFINE __F_DESCRI   2
 #DEFINE __F_TERMO    3
@@ -95,6 +124,16 @@
 #DEFINE __F_VLRTAB   6
 #DEFINE __F_VLRGUI   7
 #DEFINE __F_IAOBS    8
+#DEFINE __F_ORIGEM   9
+#DEFINE __F_QTD      10
+
+// Valores de __F_ORIGEM
+#DEFINE __O_PROC     "Procedimento"
+#DEFINE __O_PROCIA   "Procedimento + IA"
+#DEFINE __O_IA       "Anexo (IA)"
+
+// Valor na guia de medicamento que a IA achou no anexo e nao esta nos itens da guia
+#DEFINE __VLR_NAO    "nao consta"
 
 // Posicoes do item de medicamento devolvido por fCarregaMed()
 #DEFINE __M_CODPSA   1
@@ -113,20 +152,28 @@
 #DEFINE __ST_ORIGEM    "ORIGEM_NAO_ENCONTRADA"
 #DEFINE __ST_ALIAS     "ALIAS_DESCONHECIDO"
 #DEFINE __ST_CAMPO     "CAMPO_GUIA_INEXISTENTE"
+#DEFINE __ST_SEMB53    "SEM_B53"
+#DEFINE __ST_CPOB53    "CAMPO_B53_INEXISTENTE"
 
 /*/{Protheus.doc} OSMEDALTC
-Job de deteccao de medicamentos de alto custo em anexos de guias.
+Job de deteccao de itens de alto custo em guias (procedimentos lancados e anexos).
 
-Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP = __CODDEP)
-  -> tabela origem (BEA | BE4 | B44 | B4Q | B4A) -> B53 -> AC9 -> ACB
-  -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 (BR8_ALTCUS = '1') e os nomes da guia
-     a mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da
-     lista citados (nome exato, comercial, principio ativo, abreviacao, erro de OCR)
-  -> valor na guia -> e-mail para __MAIL_TO.
+Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP em __CODDEP; {} = todos)
+  -> tabela origem (BEA | BE4 | B44 | B4Q | B4A) -> numero da guia -> B53 (B53_TIPO)
+     (B71 da BEA com BEA_GUIORI vazio: guia = chave da propria BEA, OPEMOV + ANOAUT + MESAUT + NUMAUT)
+  -> 1. procedimentos lancados na guia, pela chave do B53_NUMGUI (fCfgProc; BE2 de B71 da BEA: chave da BEA):
+        B53_TIPO 1, 2, 3, 4, 5, 7 -> BE2; 11 com B71_ALIMOV = B4Q -> BQV; demais -> B4C
+        item com BR8_ALTCUS = '1' no CODPAD + CODPRO (CODPAD em __CODPAD_BR8) e procedimento de alto custo
+  -> 2. so com a IA ligada (IA_HABILITADA no .env da API, lido por GET __CFG_PATH a cada execucao):
+        AC9 -> ACB -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 e os nomes da guia a
+        mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da lista
+        citados. A IA confirma os procedimentos e acrescenta medicamentos citados que nao foram lancados
+        (confianca alta ou media; baixa so no log)
+  -> e-mail para __MAIL_TO se houver algum item.
 
-A IA e a unica verificacao: achados com confianca alta ou media entram no alerta, baixa so no log.
-Sem a IA (desligada na API, sem chave, fora do ar) a API devolve erro e a B71 fica para a proxima
-rodada, como em qualquer falha temporaria da API.
+Com a IA desligada, os anexos nao sao enviados a API e o alerta sai so pelos procedimentos. Com a IA
+ligada mas indisponivel (sem chave, Claude fora), a API devolve erro e a B71 fica para a proxima rodada,
+como em qualquer falha temporaria da API.
 
 As credenciais do SFTP ficam no .env da API, nao no Protheus. O job envia o ambiente
 (GetEnvServer) no POST e a API usa o SFTP de producao quando ele e CYWSXT_PROD, senao o de dev.
@@ -139,8 +186,9 @@ Parametros SX6:
   Z_MEDAPIT  - token Bearer da API de extracao
   MV_RELSERV, MV_RELACNT, MV_RELPSW, MV_RELAUTH, MV_RELSSL, MV_RELTLS, MV_RELFROM - SMTP padrao do Protheus
 
-Z_NOTIENCA avanca apos cada B71 concluida (com ou sem anexo/medicamento/e-mail). Falha de API,
-SFTP ou SMTP interrompe a execucao sem avancar, e a B71 e retomada na proxima rodada.
+Z_NOTIENCA avanca apos cada B71 concluida (com ou sem anexo/medicamento/e-mail). Falha de API
+(inclusive o GET __CFG_PATH), SFTP, SMTP ou da consulta dos itens interrompe a execucao sem avancar, e a
+B71 e retomada na proxima rodada. B53_TIPO ausente no dicionario tambem bloqueia.
 
 Agendamento (Scheduler / CFGX032):
   Rotina....: U_OSMEDALTC
@@ -291,9 +339,10 @@ Return cData
 
 /*/{Protheus.doc} chkMEDALTC
 Diagnostico do teste integrado: confere cada peca sem gravar Z_NOTIENCA e sem enviar e-mail
-(configuracao, watermark, medicamentos, B71 da janela, API + token + SFTP e conexao SMTP).
-Com cArquivo (um ACB_OBJETO real), verifica o anexo na API (extracao + IA) e lista os medicamentos
-que entrariam no alerta e os avisos. Sem cArquivo, a IA nao e chamada.
+(configuracao, watermark, flag da IA, medicamentos, B71 da janela com B53_TIPO, tabela de itens e
+procedimentos de alto custo, API + token + SFTP e conexao SMTP).
+Com cArquivo (um ACB_OBJETO real) e a IA ligada, verifica o anexo na API (extracao + IA) e lista os
+medicamentos que entrariam no alerta e os avisos. Sem cArquivo ou com a IA desligada, a IA nao e chamada.
 Uso: U_chkMEDALTC() ou U_chkMEDALTC("arquivo.pdf")
 @type function
 @param cArquivo, character, opcional; nome do arquivo no SFTP (sem pasta)
@@ -351,6 +400,11 @@ Static Function fDiagnostico(cArquivo)
 	Local aAchados := {}
 	Local aMedApi  := {}
 	Local oServer  := Nil
+	Local lCfg     := .F.
+	Local lIa      := .F.
+	Local lProcOk  := .T.
+	Local cModelo  := ""
+	Local cErro    := ""
 	Local nI       := 0
 
 	lOk := fChk("Token Z_MEDAPIT", fValidaCfg(), "") .And. lOk
@@ -358,8 +412,13 @@ Static Function fDiagnostico(cArquivo)
 	nUltimo := fLeWatermark()
 	lOk := fChk("Watermark " + __PAR_WATER, nUltimo >= 0, cValToChar(nUltimo)) .And. lOk
 
+	lCfg := fIaHabilitada(@lIa, @cModelo, @cErro)
+	lOk := fChk("Flag da IA (GET " + fApiBase() + __CFG_PATH + ")", lCfg,;
+		IIf(!lCfg, cErro, IIf(lIa, "IA habilitada (" + cModelo + "): procedimentos + confirmacao nos anexos",;
+			"IA desabilitada: alerta so pelos procedimentos da guia"))) .And. lOk
+
 	aMed := fCarregaMed()
-	lOk := fChk("Medicamentos de alto custo (BR8_ALTCUS = '1' com BA8)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
+	lOk := fChk("Medicamentos de alto custo (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
 	For nI := 1 To Min(Len(aMed), 5)
 		fLog("INFO", "  " + aMed[nI][__M_CODPSA] + " " + aMed[nI][__M_DESCRI] + " | " + cValToChar(Len(aMed[nI][__M_TERMOS])) +;
 			" termo(s) | valor de tabela: " + aMed[nI][__M_VLRTAB])
@@ -369,18 +428,28 @@ Static Function fDiagnostico(cArquivo)
 		aB71 := fConsulta(nUltimo)
 		For nI := 1 To Len(aB71)
 			fLogB71(aB71[nI])
-			If aB71[nI][__I_STATUS] == __ST_CAMPO
+			If aB71[nI][__I_STATUS] == __ST_CAMPO .Or. aB71[nI][__I_STATUS] == __ST_CPOB53
 				nCampo++
 			EndIf
+			If aB71[nI][__I_STATUS] == __ST_OK .Or. aB71[nI][__I_STATUS] == __ST_SEMANEXO
+				fProcAltoCusto(aB71[nI], aMed, @lProcOk)
+				If !lProcOk
+					nCampo++
+				EndIf
+			EndIf
 		Next nI
-		lOk := fChk("B71 na janela (R_E_C_N_O_ > " + cValToChar(nUltimo) + ", DATMOV = " + fDataMov() + ", CODDEP = " + __CODDEP + ")",;
+		lOk := fChk("B71 na janela (R_E_C_N_O_ > " + cValToChar(nUltimo) + ", DATMOV = " + fDataMov() + ", CODDEP = " + fDepTxt() + ")",;
 			nCampo == 0, cValToChar(Len(aB71)) + " registro(s)" +;
-			IIf(nCampo > 0, "; " + cValToChar(nCampo) + " com campo de guia inexistente (bloqueia o watermark)", "")) .And. lOk
+			IIf(nCampo > 0, "; " + cValToChar(nCampo) + " com campo inexistente ou erro na consulta dos itens (bloqueia o watermark)", "")) .And. lOk
 	EndIf
 
 	// A API exige a lista de medicamentos mesmo no teste de conexao
 	aMedApi := fMedApi(aMed)
 	nInicio := Seconds()
+	If !Empty(cArquivo) .And. lCfg .And. !lIa
+		fLog("INFO", "  IA desabilitada: o anexo " + cArquivo + " nao seria enviado a API; testando so a conexao")
+		cArquivo := ""
+	EndIf
 	If Empty(cArquivo)
 		aRes := fExtraiTexto("chk_medaltc_inexistente.pdf", aMedApi)
 		lOk := fChk("API + token + SFTP (" + __API_URL + ")", aRes[__R_DEFINIT] .And. "encontrado no SFTP" $ aRes[__R_ERRO],;
@@ -391,7 +460,7 @@ Static Function fDiagnostico(cArquivo)
 		aRes := fExtraiTexto(cArquivo, aMedApi)
 		lOk := fChk("Verificacao de " + cArquivo + " (extracao + IA)", aRes[__R_OK] .And. !Empty(aRes[__R_MODELO]),;
 			IIf(!aRes[__R_OK], aRes[__R_ERRO],;
-				IIf(Empty(aRes[__R_MODELO]), "API sem a IA obrigatoria (versao anterior): atualizar a API",;
+				IIf(Empty(aRes[__R_MODELO]), "resposta sem o modelo da IA (API de versao anterior): atualizar a API",;
 					"via " + aRes[__R_METODO] + " e " + aRes[__R_MODELO] + " em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s"))) .And. lOk
 		If aRes[__R_OK]
 			aItem := Array(__I_TAM)
@@ -437,6 +506,9 @@ Static Function fProcessa(aRes, cData)
 	Local aMedApi  := {}
 	Local aB71     := {}
 	Local nEmails  := 0
+	Local lIa      := .F.
+	Local cModelo  := ""
+	Local cErro    := ""
 	Local nI       := 0
 
 	Default cData := ""
@@ -452,18 +524,27 @@ Static Function fProcessa(aRes, cData)
 	aRes[__P_INICIO] := nUltimo
 	aRes[__P_FINAL]  := nUltimo
 
+	If !fIaHabilitada(@lIa, @cModelo, @cErro)
+		fLog("ERROR", "GET " + __CFG_PATH + " (flag da IA): " + cErro + ". Encerrando sem avancar " + __PAR_WATER + ".")
+		Return
+	EndIf
+	fLog("INFO", IIf(lIa, "IA habilitada (" + cModelo + "): procedimentos da guia + confirmacao nos anexos",;
+		"IA desabilitada (IA_HABILITADA na API): alerta so pelos procedimentos da guia, anexos nao sao enviados"))
+
 	aMed := fCarregaMed()
-	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (BR8_ALTCUS = '1' com BA8)")
+	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)")
 	If Len(aMed) == 0
 		fLog("WARN", "Nenhum medicamento de alto custo na BR8/BA8; nada a comparar. Encerrando sem avancar " + __PAR_WATER + ".")
 		Return
 	EndIf
 
-	aMedApi := fMedApi(aMed)
+	If lIa
+		aMedApi := fMedApi(aMed)
+	EndIf
 
 	fLog("INFO", "Watermark " + __PAR_WATER + " = " + cValToChar(nUltimo) +;
 		"; buscando B71 com R_E_C_N_O_ > " + cValToChar(nUltimo) +;
-		", CODDEP = " + __CODDEP + ", DATMOV = " + fDataMov(cData))
+		", CODDEP = " + fDepTxt() + ", DATMOV = " + fDataMov(cData))
 
 	fAvisaAtrasadas(nUltimo, cData)
 
@@ -477,7 +558,7 @@ Static Function fProcessa(aRes, cData)
 	nGravado := nUltimo
 	For nI := 1 To Len(aB71)
 		fLogB71(aB71[nI])
-		If !fVerificaB71(aB71[nI], aMed, @nEmails, aMedApi)
+		If !fVerificaB71(aB71[nI], aMed, @nEmails, aMedApi, lIa)
 			fLog("WARN", "B71 " + cValToChar(aB71[nI][__I_RECNO]) + " nao concluida; ela e as seguintes" +;
 				" serao retomadas na proxima execucao. " + __PAR_WATER + " permanece em " + cValToChar(nGravado) + ".")
 			Exit
@@ -495,63 +576,121 @@ Static Function fProcessa(aRes, cData)
 Return
 
 /*/{Protheus.doc} fVerificaB71
-Pipeline completo de uma B71: verifica os anexos na API, monta os medicamentos achados e,
-se houver, envia o e-mail.
+Pipeline completo de uma B71: procedimentos de alto custo lancados na guia; com a IA ligada, verificacao
+dos anexos na API e mescla dos dois resultados; se houver algum item, envia o e-mail.
 @type function
 @param aItem, array, item devolvido por fConsulta()
 @param aMed, array, medicamentos devolvidos por fCarregaMed()
 @param nEmails, numeric, contador de e-mails enviados (por referencia)
-@param aMedApi, array, lista de medicamentos enviada a API (fMedApi)
+@param aMedApi, array, lista de medicamentos enviada a API (fMedApi); vazia com a IA desligada
+@param lIa, logical, IA ligada na API (fIaHabilitada)
 @return logical, .T. se a B71 pode ser dada como verificada (avancar Z_NOTIENCA)
 /*/
-Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi)
+Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
 
+	Local aProc    := {}
+	Local aIa      := {}
 	Local aAchados := {}
 	Local cLista   := ""
-	Local oErro    := Nil
+	Local cIte     := ""
+	Local lOk      := .T.
 	Local nI       := 0
 
-	If aItem[__I_STATUS] == __ST_CAMPO
+	If aItem[__I_STATUS] == __ST_CAMPO .Or. aItem[__I_STATUS] == __ST_CPOB53
 		Return .F.
 	EndIf
 
-	If !fProcessaB71(aItem, aMedApi)
-		Return .F.
-	EndIf
-
-	If Len(aItem[__I_TEXTOS]) == 0
+	If aItem[__I_STATUS] != __ST_OK .And. aItem[__I_STATUS] != __ST_SEMANEXO
 		Return .T.
 	EndIf
 
-	aAchados := fBuscaMed(aItem, aMed)
+	aProc := fProcAltoCusto(aItem, aMed, @lOk)
+	If !lOk
+		Return .F.
+	EndIf
+
+	If lIa .And. aItem[__I_STATUS] == __ST_OK
+		If !fProcessaB71(aItem, aMedApi)
+			Return .F.
+		EndIf
+		aIa := fBuscaMed(aItem, aMed)
+	EndIf
+
+	aAchados := fMescla(aProc, aIa, lIa, Len(aItem[__I_TEXTOS]) > 0)
 	If Len(aAchados) == 0
-		fLog("INFO", "  nenhum medicamento de alto custo nos anexos")
+		fLog("INFO", "  nenhum item de alto custo na guia" + IIf(lIa, " nem nos anexos", ""))
 		Return .T.
 	EndIf
 
+	cIte := fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS]
 	For nI := 1 To Len(aAchados)
-		cLista += IIf(nI > 1, ", ", "") + aAchados[nI][__F_CODPSA] + " (" + aAchados[nI][__F_TERMO] + " em " + aAchados[nI][__F_OBJETO] + ")"
+		cLista += IIf(nI > 1, ", ", "") + aAchados[nI][__F_CODPSA] + " (" + aAchados[nI][__F_ORIGEM] +;
+			IIf(aAchados[nI][__F_ORIGEM] == __O_IA, "", " " + cIte) +;
+			IIf(Empty(aAchados[nI][__F_OBJETO]), "", " em " + aAchados[nI][__F_OBJETO]) + ")"
 	Next nI
-	fLog("INFO", "  " + cValToChar(Len(aAchados)) + " ocorrencia(s) de alto custo: " + cLista)
+	fLog("INFO", "  " + cValToChar(Len(aAchados)) + " item(ns) de alto custo: " + cLista)
 
-	BEGIN SEQUENCE
-		fValorGuia(aItem, aAchados)
-	RECOVER USING oErro
-		fLog("WARN", "  valor na guia nao apurado: " + IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
-	END SEQUENCE
-
-	If !fEnviaEmail(aItem, aAchados)
+	If !fEnviaEmail(aItem, aAchados, lIa)
 		Return .F.
 	EndIf
 	nEmails++
 
 Return .T.
 
+/*/{Protheus.doc} fMescla
+Junta os procedimentos de alto custo da guia com os achados da IA nos anexos. Cada procedimento vira
+uma linha; os achados da IA do mesmo codigo o confirmam (termos e anexos juntados na linha). Achados
+da IA sem procedimento correspondente entram como __O_IA, com valor na guia __VLR_NAO.
+@type function
+@param aProc, array, fProcAltoCusto()
+@param aIa, array, fBuscaMed() (vazio com a IA desligada)
+@param lIa, logical, IA ligada
+@param lAnexo, logical, algum anexo foi verificado pela IA
+@return array, itens no formato __F_*
+/*/
+Static Function fMescla(aProc, aIa, lIa, lAnexo)
+
+	Local aRet  := {}
+	Local aLin  := {}
+	Local cObs  := ""
+	Local nP    := 0
+	Local nI    := 0
+
+	For nP := 1 To Len(aProc)
+		aLin := aClone(aProc[nP])
+		cObs := ""
+		For nI := 1 To Len(aIa)
+			If aIa[nI][__F_CODPSA] == aLin[__F_CODPSA]
+				aLin[__F_TERMO]  += IIf(Empty(aLin[__F_TERMO]), "", " / ") + aIa[nI][__F_TERMO]
+				aLin[__F_OBJETO] += IIf(Empty(aLin[__F_OBJETO]), "", " / ") + aIa[nI][__F_OBJETO]
+				cObs += IIf(Empty(cObs), "", " / ") + aIa[nI][__F_IAOBS]
+			EndIf
+		Next nI
+		Do Case
+		Case !Empty(aLin[__F_OBJETO])
+			aLin[__F_ORIGEM] := __O_PROCIA
+			aLin[__F_IAOBS]  := "confirmado pela IA: " + cObs
+		Case lIa .And. lAnexo
+			aLin[__F_IAOBS] := "nao citado nos anexos"
+		Case lIa
+			aLin[__F_IAOBS] := "sem anexo para confirmar"
+		EndCase
+		aAdd(aRet, aLin)
+	Next nP
+
+	For nI := 1 To Len(aIa)
+		If aScan(aProc, {|x| x[__F_CODPSA] == aIa[nI][__F_CODPSA]}) == 0
+			aAdd(aRet, aIa[nI])
+		EndIf
+	Next nI
+
+Return aRet
+
 /*/{Protheus.doc} fBuscaMed
 Monta os medicamentos achados pela IA (na API) em cada anexo da B71 e registra os avisos no log.
 @type function
-@return array, { {cCodPsa, cDescri, cTermo, cObjeto, cCodPad, cVlrTab, cVlrGui, cIaObs}, ... }: no maximo
-	uma ocorrencia por medicamento em cada anexo. cVlrGui e preenchido depois por fValorGuia()
+@return array, itens no formato __F_* com __F_ORIGEM = __O_IA e valor na guia __VLR_NAO (fMescla troca
+	pelo procedimento quando o codigo esta na guia): no maximo uma ocorrencia por medicamento em cada anexo
 /*/
 Static Function fBuscaMed(aItem, aMed)
 
@@ -593,7 +732,7 @@ Static Function fAchadosApi(aApi, aMed, cObjeto)
 			Loop
 		EndIf
 		aAdd(aRet, {aApi[nI][__V_CODIGO], aMed[nM][__M_DESCRI], aApi[nI][__V_TERMO], cObjeto,;
-			aMed[nM][__M_CODPAD], aMed[nM][__M_VLRTAB], __VLR_ND, aApi[nI][__V_OBS]})
+			aMed[nM][__M_CODPAD], aMed[nM][__M_VLRTAB], __VLR_NAO, aApi[nI][__V_OBS], __O_IA, ""})
 	Next nI
 
 Return aRet
@@ -652,9 +791,10 @@ Return AllTrim(cRet)
 Envia o alerta da B71 para __MAIL_TO pelo SMTP configurado no Protheus
 (MV_RELSERV, MV_RELACNT, MV_RELPSW, MV_RELAUTH, MV_RELSSL, MV_RELTLS, MV_RELFROM).
 @type function
+@param lIa, logical, IA ligada (inclui as colunas dos anexos)
 @return logical, .T. se o e-mail foi aceito pelo servidor SMTP
 /*/
-Static Function fEnviaEmail(aItem, aAchados)
+Static Function fEnviaEmail(aItem, aAchados, lIa)
 
 	Local cFrom   := AllTrim(SuperGetMV("MV_RELFROM", .F., ""))
 	Local oServer := Nil
@@ -674,7 +814,7 @@ Static Function fEnviaEmail(aItem, aAchados)
 	oMsg:cFrom    := cFrom
 	oMsg:cTo      := __MAIL_TO
 	oMsg:cSubject := fAssunto(aItem, aAchados)
-	oMsg:cBody    := fCorpoEmail(aItem, aAchados)
+	oMsg:cBody    := fCorpoEmail(aItem, aAchados, lIa)
 
 	nErro := oMsg:Send(oServer)
 	oServer:SMTPDisconnect()
@@ -737,7 +877,7 @@ Return .T.
 
 /*/{Protheus.doc} fAssunto
 @type function
-@return character, "[Alto custo] Guia <guia> - <n> medicamento(s) identificado(s)"
+@return character, "[Alto custo] Guia <guia> - <n> item(ns) de alto custo"
 /*/
 Static Function fAssunto(aItem, aAchados)
 
@@ -750,49 +890,60 @@ Static Function fAssunto(aItem, aAchados)
 		EndIf
 	Next nI
 
-Return "[Alto custo] Guia " + aItem[__I_NUMGUI] + " - " + cValToChar(Len(aCodigos)) + " medicamento(s) identificado(s)"
+Return "[Alto custo] Guia " + aItem[__I_NUMGUI] + " - " + cValToChar(Len(aCodigos)) + " item(ns) de alto custo"
 
 /*/{Protheus.doc} fCorpoEmail
 Monta o corpo HTML do alerta. Nao inclui trechos do texto dos anexos (dados de saude).
 @type function
+@param lIa, logical, IA ligada: inclui termo, anexo e observacao da IA
 @return character, HTML
 /*/
-Static Function fCorpoEmail(aItem, aAchados)
+Static Function fCorpoEmail(aItem, aAchados, lIa)
 
 	Local cHtml := ""
 	Local nI    := 0
 
 	cHtml += '<html><body style="font-family:Arial,sans-serif;font-size:13px">'
-	cHtml += "<p>O job OSMEDALTC identificou medicamento(s) de alto custo em anexo(s) de guia.</p>"
+	cHtml += "<p>O job OSMEDALTC identificou item(ns) de alto custo na guia" + IIf(lIa, " ou em seus anexos", "") + ".</p>"
 
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
 	cHtml += "<tr><td><b>Guia</b></td><td>" + fHtml(aItem[__I_NUMGUI]) + "</td></tr>"
+	cHtml += "<tr><td><b>Tipo da guia (B53)</b></td><td>" + fHtml(aItem[__I_TIPO]) +;
+		" (itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")</td></tr>"
 	cHtml += "<tr><td><b>Origem</b></td><td>" + fHtml(aItem[__I_ALIMOV]) + " (recno " + fHtml(aItem[__I_RECMOV]) + ")</td></tr>"
 	cHtml += "<tr><td><b>Movimenta&ccedil;&atilde;o B71</b></td><td>" + cValToChar(aItem[__I_RECNO]) + " - " + DToC(SToD(aItem[__I_DATMOV])) + "</td></tr>"
 	cHtml += "</table>"
 
-	cHtml += "<p><b>Medicamentos encontrados:</b></p>"
+	cHtml += "<p><b>Itens de alto custo:</b></p>"
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
-	cHtml += "<tr><th>C&oacute;digo</th><th>Descri&ccedil;&atilde;o (BR8)</th><th>Valor de tabela</th>" +;
-		"<th>Valor na guia</th><th>Termo encontrado</th><th>Anexo</th><th>Observa&ccedil;&atilde;o IA</th></tr>"
+	cHtml += "<tr><th>C&oacute;digo</th><th>Descri&ccedil;&atilde;o (BR8)</th><th>Detec&ccedil;&atilde;o</th><th>Qtd</th>" +;
+		"<th>Valor de tabela</th><th>Valor na guia</th>" +;
+		IIf(lIa, "<th>Termo encontrado</th><th>Anexo</th><th>Observa&ccedil;&atilde;o IA</th>", "") + "</tr>"
 	For nI := 1 To Len(aAchados)
 		cHtml += "<tr>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_CODPSA]) + "</td>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_DESCRI]) + "</td>"
+		cHtml += "<td>" + fHtml(aAchados[nI][__F_ORIGEM]) + "</td>"
+		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_QTD]) + "</td>"
 		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_VLRTAB]) + "</td>"
 		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_VLRGUI]) + "</td>"
-		cHtml += "<td>" + fHtml(aAchados[nI][__F_TERMO]) + "</td>"
-		cHtml += "<td>" + fHtml(aAchados[nI][__F_OBJETO]) + "</td>"
-		cHtml += "<td>" + fHtml(aAchados[nI][__F_IAOBS]) + "</td>"
+		If lIa
+			cHtml += "<td>" + fHtml(aAchados[nI][__F_TERMO]) + "</td>"
+			cHtml += "<td>" + fHtml(aAchados[nI][__F_OBJETO]) + "</td>"
+			cHtml += "<td>" + fHtml(aAchados[nI][__F_IAOBS]) + "</td>"
+		EndIf
 		cHtml += "</tr>"
 	Next nI
 	cHtml += "</table>"
-	cHtml += '<p style="font-size:11px;color:#555">Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; ' + DToC(Date()) +;
-		". Valor na guia: soma dos itens da guia com o mesmo c&oacute;digo; &quot;nao consta&quot; quando o medicamento" +;
-		" aparece s&oacute; no anexo. &quot;" + __VLR_ND + "&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
-	cHtml += '<p style="font-size:11px;color:#555">Identifica&ccedil;&atilde;o feita pela IA (Claude) sobre o texto do anexo:' +;
-		" nome do cadastro, nome comercial, princ&iacute;pio ativo, abrevia&ccedil;&atilde;o ou erro de leitura." +;
-		" Confira o anexo antes de agir.</p>"
+	cHtml += '<p style="font-size:11px;color:#555">Procedimento: item lan&ccedil;ado na guia com BR8_ALTCUS = 1 (tabela ' + fCodPadTxt() + ').' +;
+		" Qtd e valor na guia: soma de quantidade solicitada x valor unit&aacute;rio dos itens da guia com o mesmo c&oacute;digo." +;
+		" Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; " + DToC(Date()) + ". &quot;" + __VLR_ND +;
+		"&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
+	If lIa
+		cHtml += '<p style="font-size:11px;color:#555">Anexo (IA): medicamento citado no anexo e n&atilde;o lan&ccedil;ado na guia' +;
+			" (&quot;" + __VLR_NAO + "&quot; no valor na guia). A IA (Claude) l&ecirc; o texto do anexo e reconhece nome do cadastro," +;
+			" nome comercial, princ&iacute;pio ativo, abrevia&ccedil;&atilde;o ou erro de leitura. Confira o anexo antes de agir.</p>"
+	EndIf
 
 	cHtml += '<p style="color:#888">Mensagem autom&aacute;tica - n&atilde;o responder.</p>'
 	cHtml += "</body></html>"
@@ -1055,8 +1206,8 @@ Static Function fDecUtf8(xTexto)
 Return IIf(ValType(xDec) == "C", xDec, cTexto)
 
 /*/{Protheus.doc} fCarregaMed
-Carrega os medicamentos de alto custo: BR8 INNER JOIN BA8, BR8_ALTCUS = '1'.
-Itens so na BR8, sem BA8, ficam de fora.
+Carrega os medicamentos de alto custo: BR8 LEFT JOIN BA8, BR8_ALTCUS = '1' e BR8_CODPAD em __CODPAD_BR8.
+Itens so na BR8, sem BA8, entram so com o termo da BR8_DESCRI (e ficam sem valor de tabela).
 @type function
 @return array, { {cCodPsa, cDescri, aTermos, cCodPad, cVlrTab}, ... }. aTermos tem as descricoes
 	normalizadas (BR8_DESCRI, BA8_DESCRI, BA8_DPRINC), sem repeticao. cVlrTab vem de fCarregaVlrTab().
@@ -1070,15 +1221,17 @@ Static Function fCarregaMed()
 	Local oErro  := Nil
 	Local nPos   := 0
 
-	cQuery := "SELECT BR8.BR8_CODPAD, BR8.BR8_CODPSA, BR8.BR8_DESCRI, BA8.BA8_DESCRI AS BA8DESC, BA8.BA8_DPRINC" +;
+	cQuery := "SELECT DISTINCT BR8.BR8_CODPAD, BR8.BR8_CODPSA, BR8.BR8_DESCRI," +;
+		" COALESCE(BA8.BA8_DESCRI, ' ') AS BA8DESC, COALESCE(BA8.BA8_DPRINC, ' ') AS BA8DPRINC" +;
 		" FROM " + RetSqlName("BR8") + " BR8" +;
-		" INNER JOIN " + RetSqlName("BA8") + " BA8" +;
+		" LEFT JOIN " + RetSqlName("BA8") + " BA8" +;
 		" ON BA8.BA8_FILIAL = '" + xFilial("BA8") + "'" +;
 		" AND BA8.BA8_CDPADP = BR8.BR8_CODPAD" +;
 		" AND BA8.BA8_CODPRO = BR8.BR8_CODPSA" +;
 		" AND BA8.D_E_L_E_T_ = ' '" +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
 		" AND BR8.BR8_ALTCUS = '1'" +;
+		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA"
 
@@ -1093,7 +1246,7 @@ Static Function fCarregaMed()
 		EndIf
 		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BR8_DESCRI)
 		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BA8DESC)
-		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BA8_DPRINC)
+		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BA8DPRINC)
 		(cAlias)->(DbSkip())
 	EndDo
 
@@ -1165,6 +1318,7 @@ Static Function fCarregaVlrTab(aMed)
 			" AND BD4N.D_E_L_E_T_ = ' ')" +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
 		" AND BR8.BR8_ALTCUS = '1'" +;
+		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA, BD4.BD4_CODTAB, BD4.BD4_CODIGO"
 
@@ -1189,102 +1343,152 @@ Static Function fCarregaVlrTab(aMed)
 
 Return
 
-/*/{Protheus.doc} fValorGuia
-Preenche __F_VLRGUI de cada medicamento encontrado com a soma do valor dos itens da guia
-de origem que tem o mesmo CODPAD + CODPRO. Tabelas de itens e campos em fCfgItens().
+/*/{Protheus.doc} fProcAltoCusto
+Procedimentos de alto custo lancados na guia: itens da tabela escolhida por fCfgProc() (B53_TIPO e
+B71_ALIMOV), pela chave do B53_NUMGUI, com BR8_ALTCUS = '1' no CODPAD + CODPRO do item e CODPAD em
+__CODPAD_BR8.
+Todos os procedimentos da guia vao para o log (com a tabela e a marca ALTO CUSTO); so os de alto
+custo sao devolvidos.
+Valor na guia = soma de quantidade solicitada x valor unitario (quantidade zerada conta como 1).
+Tabela ou campo ausente no dicionario so vai para o log (nova tentativa nao resolveria).
 @type function
-@param aItem, array, B71 (origem em __I_ALIMOV / __I_RECMOV)
-@param aAchados, array, retorno de fBuscaMed() (alterado por referencia)
+@param aItem, array, B71 com __I_ALIMOV, __I_TIPO e __I_B53GUI (fMontaB71)
+@param aMed, array, medicamentos de fCarregaMed() (descricao e valor de tabela)
+@param lOk, logical, (por referencia) .F. se a consulta falhou (falha temporaria: a B71 nao avanca)
+@return array, itens no formato __F_*, com __F_ORIGEM = __O_PROC
 /*/
-Static Function fValorGuia(aItem, aAchados)
+Static Function fProcAltoCusto(aItem, aMed, lOk)
 
-	Local cAliMov := aItem[__I_ALIMOV]
-	Local aCfg    := fCfgItens(cAliMov)
-	Local aCampos := {}
+	Local aCfg    := fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])
+	Local cIte    := aCfg[__C_ALIAS]
+	Local lBea    := cIte == "BE2" .And. !Empty(aItem[__I_CHVBEA])
+	Local cNumGui := IIf(lBea, aItem[__I_CHVBEA], aItem[__I_B53GUI])
+	Local cOrigem := IIf(lBea, "chave da BEA recno " + aItem[__I_RECMOV], "B53_NUMGUI")
+	Local aPartes := __NUMGUI_PT
+	Local aCampos := {aCfg[__C_CODPAD], aCfg[__C_CODPRO], aCfg[__C_QTD], aCfg[__C_VALOR]}
+	Local aProc   := {}
+	Local aLinhas := {}
 	Local cFalta  := ""
+	Local cQtd    := ""
 	Local cQuery  := ""
 	Local cAlias  := ""
-	Local cIte    := ""
-	Local aItens  := {}
-	Local nPos    := 0
+	Local cCod    := ""
+	Local cDescri := ""
+	Local cCodPad := ""
+	Local cChave  := ""
+	Local cValor  := ""
+	Local lAltCus := .F.
+	Local lAltBr8 := .F.
+	Local oErro   := Nil
+	Local nIni    := 1
+	Local nTotal  := 0
+	Local nM      := 0
 	Local nI      := 0
 
-	If Len(aCfg) == 0
-		fLog("WARN", "  valor na guia: tabela de itens de " + cAliMov + " nao mapeada em fCfgItens()")
-		Return
+	lOk := .T.
+
+	aEval(aPartes, {|x| nTotal += x})
+	If Len(cNumGui) != nTotal .Or. !fSoDigitos(cNumGui)
+		fLog("WARN", "  procedimentos nao verificados: " + cOrigem + " '" + cNumGui + "' fora do formato OPEMOV+ANOAUT+MESAUT+NUMAUT")
+		Return aProc
 	EndIf
 
-	cIte := aCfg[2]
-	For nI := 1 To Len(aCfg[3])
-		aAdd(aCampos, aCfg[3][nI][1])
-	Next nI
-	If !fCamposOk(cAliMov, aCampos, @cFalta)
-		fLog("WARN", "  valor na guia indisponivel: " + cFalta + " nao existe no dicionario")
-		Return
-	EndIf
-
-	aCampos := {aCfg[4], aCfg[5], aCfg[6]}
-	For nI := 1 To Len(aCfg[3])
-		aAdd(aCampos, aCfg[3][nI][2])
-	Next nI
+	aEval(aCfg[__C_CHAVE], {|x| aAdd(aCampos, x)})
 	If !fCamposOk(cIte, aCampos, @cFalta)
-		fLog("WARN", "  valor na guia indisponivel: " + cFalta + " nao existe no dicionario")
-		Return
+		fLog("ERROR", "  procedimentos nao verificados: " + cFalta + " nao existe no dicionario (itens " + cIte + ")")
+		Return aProc
 	EndIf
 
-	If !fPosOrigem(cAliMov, Val(aItem[__I_RECMOV]))
-		fLog("WARN", "  valor na guia: registro origem " + cAliMov + " " + aItem[__I_RECMOV] + " nao encontrado")
-		Return
+	cQtd := "(CASE WHEN IT." + aCfg[__C_QTD] + " > 0 THEN IT." + aCfg[__C_QTD] + " ELSE 1 END)"
+	cQuery := "SELECT IT." + aCfg[__C_CODPAD] + " AS CODPAD, IT." + aCfg[__C_CODPRO] + " AS CODPRO," +;
+		" BR8.BR8_CODPSA AS BR8COD, BR8.BR8_DESCRI, BR8.BR8_ALTCUS," +;
+		" SUM(" + cQtd + ") AS QTD, SUM(" + cQtd + " * IT." + aCfg[__C_VALOR] + ") AS VALOR" +;
+		" FROM " + RetSqlName(cIte) + " IT" +;
+		" LEFT JOIN " + RetSqlName("BR8") + " BR8" +;
+		" ON BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
+		" AND BR8.BR8_CODPAD = IT." + aCfg[__C_CODPAD] +;
+		" AND BR8.BR8_CODPSA = IT." + aCfg[__C_CODPRO] +;
+		" AND BR8.D_E_L_E_T_ = ' '" +;
+		" WHERE IT." + cIte + "_FILIAL = '" + xFilial(cIte) + "'"
+	For nI := 1 To Len(aCfg[__C_CHAVE])
+		cQuery += " AND IT." + aCfg[__C_CHAVE][nI] + " = '" + SubStr(cNumGui, nIni, aPartes[nI]) + "'"
+		cChave += IIf(nI > 1, "+", "") + aCfg[__C_CHAVE][nI]
+		cValor += IIf(nI > 1, " ", "") + SubStr(cNumGui, nIni, aPartes[nI])
+		nIni += aPartes[nI]
+	Next nI
+	cQuery += " AND IT.D_E_L_E_T_ = ' '" +;
+		" GROUP BY IT." + aCfg[__C_CODPAD] + ", IT." + aCfg[__C_CODPRO] + ", BR8.BR8_CODPSA, BR8.BR8_DESCRI, BR8.BR8_ALTCUS" +;
+		" ORDER BY IT." + aCfg[__C_CODPRO]
+
+	BEGIN SEQUENCE
+		cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
+		While !(cAlias)->(Eof())
+			cCod    := AllTrim((cAlias)->CODPRO)
+			cCodPad := AllTrim((cAlias)->CODPAD)
+			cDescri := IIf(Empty((cAlias)->BR8COD), "(nao cadastrado na BR8)", AllTrim((cAlias)->BR8_DESCRI))
+			lAltBr8 := AllTrim((cAlias)->BR8_ALTCUS) == "1"
+			lAltCus := lAltBr8 .And. aScan(__CODPAD_BR8, cCodPad) > 0
+			aAdd(aLinhas, "    [" + cIte + "] " + cCodPad + " " + cCod + " - " + cDescri +;
+				" | qtd " + fQtd((cAlias)->QTD) + " | " + fMoeda((cAlias)->VALOR) +;
+				IIf(lAltCus, " | ALTO CUSTO", IIf(lAltBr8, " | alto custo na BR8, CODPAD fora de " + fCodPadTxt() + " (ignorado)", "")))
+			If lAltCus
+				nM := aScan(aMed, {|x| x[__M_CODPSA] == cCod .And. x[__M_CODPAD] == cCodPad})
+				aAdd(aProc, {cCod, cDescri, "", "", cCodPad,;
+					IIf(nM > 0, aMed[nM][__M_VLRTAB], __VLR_ND), fMoeda((cAlias)->VALOR), "", __O_PROC, fQtd((cAlias)->QTD)})
+			EndIf
+			(cAlias)->(DbSkip())
+		EndDo
+		(cAlias)->(DbCloseArea())
+	RECOVER USING oErro
+		lOk := .F.
+	END SEQUENCE
+
+	If !lOk
+		If !Empty(cAlias) .And. Select(cAlias) > 0
+			(cAlias)->(DbCloseArea())
+		EndIf
+		fLog("ERROR", "  procedimentos da guia (itens " + cIte + "): " + IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
+		Return {}
 	EndIf
 
-	cQuery := "SELECT " + aCfg[4] + " AS CODPAD, " + aCfg[5] + " AS CODPRO, SUM(" + aCfg[6] + ") AS VALOR" +;
-		" FROM " + RetSqlName(cIte) +;
-		" WHERE " + cIte + "_FILIAL = '" + xFilial(cIte) + "'"
-	For nI := 1 To Len(aCfg[3])
-		cQuery += " AND " + aCfg[3][nI][2] + " = '" + fSqlStr((cAliMov)->(FieldGet(FieldPos(aCfg[3][nI][1])))) + "'"
-	Next nI
-	cQuery += " AND D_E_L_E_T_ = ' '" +;
-		" GROUP BY " + aCfg[4] + ", " + aCfg[5]
+	If Len(aLinhas) == 0
+		fLog("INFO", "  itens " + cIte + " da guia (" + cOrigem + ": " + cChave + " = " + cValor + "): nenhum procedimento lancado")
+	Else
+		fLog("INFO", "  itens " + cIte + " da guia (" + cOrigem + ": " + cChave + " = " + cValor + "): " + cValToChar(Len(aLinhas)) +;
+			" procedimento(s), " + cValToChar(Len(aProc)) + " de alto custo")
+		aEval(aLinhas, {|x| fLog("INFO", x)})
+	EndIf
 
-	cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
+Return aProc
 
-	While !(cAlias)->(Eof())
-		aAdd(aItens, {AllTrim((cAlias)->CODPAD), AllTrim((cAlias)->CODPRO), (cAlias)->VALOR})
-		(cAlias)->(DbSkip())
-	EndDo
-
-	(cAlias)->(DbCloseArea())
-
-	For nI := 1 To Len(aAchados)
-		nPos := aScan(aItens, {|x| x[1] == aAchados[nI][__F_CODPAD] .And. x[2] == aAchados[nI][__F_CODPSA]})
-		aAchados[nI][__F_VLRGUI] := IIf(nPos > 0, fMoeda(aItens[nPos][3]), "nao consta")
-	Next nI
-
-Return
-
-/*/{Protheus.doc} fCfgItens
-Mapa tabela origem -> tabela de itens da guia. Confirmar os campos no SX3 da base com
-levantamento/05-campos-valor.sql; campo inexistente so deixa a coluna "Valor na guia" como n/d.
+/*/{Protheus.doc} fCfgProc
+Tabela de itens da guia pelo tipo da guia na B53. A chave dos itens e o B53_NUMGUI dividido em
+__NUMGUI_PT (OPEMOV + ANOAUT + MESAUT + NUMAUT); na BE2 de uma B71 da BEA, a chave da propria BEA
+(fChaveBea). Confirmar com levantamento/07-b53-tipgui-itens.sql.
 @type function
-@return array, {cAliOri, cAliIte, {{cCampoOri, cCampoIte}, ...}, cCpoCodPad, cCpoCodPro, cCpoValor}
-	ou {} se o alias nao estiver mapeado
+@param cTipo, character, B53_TIPO
+@param cAliMov, character, B71_ALIMOV (tabela origem da movimentacao)
+@return array, {cAliIte, {aCamposChave}, cCpoCodPad, cCpoCodPro, cCpoQtd, cCpoVlrUnit} (posicoes __C_*)
 /*/
-Static Function fCfgItens(cAliMov)
+Static Function fCfgProc(cTipo, cAliMov)
 
-	Local aMapa := {;
-		{"BEA", "BE2", {{"BEA_OPEMOV", "BE2_OPEMOV"}, {"BEA_ANOAUT", "BE2_ANOAUT"}, {"BEA_MESAUT", "BE2_MESAUT"}, {"BEA_NUMAUT", "BE2_NUMAUT"}},;
-			"BE2_CODPAD", "BE2_CODPRO", "BE2_VLRAPR"},;
-		{"BE4", "BEJ", {{"BE4_CODOPE", "BEJ_CODOPE"}, {"BE4_ANOINT", "BEJ_ANOINT"}, {"BE4_MESINT", "BEJ_MESINT"}, {"BE4_NUMINT", "BEJ_NUMINT"}},;
-			"BEJ_CODPAD", "BEJ_CODPRO", "BEJ_VLRAPR"},;
-		{"B44", "B45", {{"B44_OPEMOV", "B45_OPEMOV"}, {"B44_ANOAUT", "B45_ANOAUT"}, {"B44_MESAUT", "B45_MESAUT"}, {"B44_NUMAUT", "B45_NUMAUT"}},;
-			"B45_CODPAD", "B45_CODPRO", "B45_VLRAPR"},;
-		{"B4Q", "BQV", {{"B4Q_OPEMOV", "BQV_OPEMOV"}, {"B4Q_ANOAUT", "BQV_ANOAUT"}, {"B4Q_MESAUT", "BQV_MESAUT"}, {"B4Q_NUMAUT", "BQV_NUMAUT"}},;
-			"BQV_CODPAD", "BQV_CODPRO", "BQV_VLRAPR"},;
-		{"B4A", "B4C", {{"B4A_OPEMOV", "B4C_OPEMOV"}, {"B4A_ANOAUT", "B4C_ANOAUT"}, {"B4A_MESAUT", "B4C_MESAUT"}, {"B4A_NUMAUT", "B4C_NUMAUT"}},;
-			"B4C_CODPAD", "B4C_CODPRO", "B4C_VLRAPR"}}
-	Local nPos := aScan(aMapa, {|x| x[1] == cAliMov})
+	Local nTip := Val(AllTrim(cTipo))
 
-Return IIf(nPos > 0, aMapa[nPos], {})
+	Do Case
+	Case aScan(__TIP_BE2, nTip) > 0
+		Return {"BE2", {"BE2_OPEMOV", "BE2_ANOAUT", "BE2_MESAUT", "BE2_NUMAUT"}, "BE2_CODPAD", "BE2_CODPRO", "BE2_QTDSOL", "BE2_VLRAPR"}
+	Case nTip == __TIP_BQV .And. AllTrim(cAliMov) == "B4Q"
+		Return {"BQV", {"BQV_CODOPE", "BQV_ANOINT", "BQV_MESINT", "BQV_NUMINT"}, "BQV_CODPAD", "BQV_CODPRO", "BQV_QTDSOL", "BQV_VLRAPR"}
+	EndCase
+
+Return {"B4C", {"B4C_OPEMOV", "B4C_ANOAUT", "B4C_MESAUT", "B4C_NUMAUT"}, "B4C_CODPAD", "B4C_CODPRO", "B4C_QTDSOL", "B4C_VLRUNT"}
+
+/*/{Protheus.doc} fQtd
+@type function
+@return character, quantidade sem casas decimais quando inteira, senao com 2 casas (virgula)
+/*/
+Static Function fQtd(nQtd)
+Return AllTrim(Transform(nQtd, IIf(nQtd == Int(nQtd), "@E 999,999,999", "@E 999,999,999.99")))
 
 /*/{Protheus.doc} fCamposOk
 @type function
@@ -1320,6 +1524,50 @@ Static Function fSqlStr(xValor)
 
 Return StrTran(cRet, "'", "''")
 
+/*/{Protheus.doc} fSqlIn
+@type function
+@return character, lista para o IN do SQL, ex.: "('00', '20')"
+/*/
+Static Function fSqlIn(aValores)
+
+	Local cRet := ""
+
+	aEval(aValores, {|x| cRet += IIf(Empty(cRet), "", ", ") + "'" + fSqlStr(x) + "'"})
+
+Return "(" + cRet + ")"
+
+/*/{Protheus.doc} fCodPadTxt
+@type function
+@return character, CODPADs de __CODPAD_BR8 separados por "/" (ex.: "00/20"), para log e e-mail
+/*/
+Static Function fCodPadTxt()
+Return fListaCpo(__CODPAD_BR8)
+
+/*/{Protheus.doc} fFiltroDep
+@type function
+@return character, filtro " AND B71.B71_CODDEP IN (...)" com os departamentos de __CODDEP, ou ""
+	(todos os departamentos) se __CODDEP estiver vazio
+/*/
+Static Function fFiltroDep()
+
+	Local aDep := __CODDEP
+
+	If Len(aDep) == 0
+		Return ""
+	EndIf
+
+Return " AND B71.B71_CODDEP IN " + fSqlIn(aDep)
+
+/*/{Protheus.doc} fDepTxt
+@type function
+@return character, departamentos de __CODDEP separados por "/" (ex.: "012/015"), ou "todos", para log
+/*/
+Static Function fDepTxt()
+
+	Local aDep := __CODDEP
+
+Return IIf(Len(aDep) == 0, "todos", fListaCpo(aDep))
+
 /*/{Protheus.doc} fMoeda
 @type function
 @return character, "R$ 1.234,56"
@@ -1350,7 +1598,7 @@ Static Function fNormaliza(cTexto)
 Return Upper(FwNoAccent(AllTrim(cTexto)))
 
 /*/{Protheus.doc} fConsulta
-Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = fDataMov(cData), CODDEP = __CODDEP) e, para cada uma,
+Busca as B71 novas (R_E_C_N_O_ > nUltimo, DATMOV = fDataMov(cData), CODDEP em __CODDEP) e, para cada uma,
 resolve a guia na tabela origem e os anexos B53 -> AC9 -> ACB.
 Todas as B71 da janela voltam, inclusive sem anexo ou com alias desconhecido, para que o
 watermark possa avancar sobre elas.
@@ -1370,7 +1618,7 @@ Static Function fConsulta(nUltimo, cData)
 	cQuery := "SELECT B71.R_E_C_N_O_ AS B71REC, B71.B71_ALIMOV, B71.B71_RECMOV, B71.B71_DATMOV" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
-		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
+		fFiltroDep() +;
 		" AND B71.B71_DATMOV = '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '" +;
@@ -1406,7 +1654,7 @@ Static Function fAvisaAtrasadas(nUltimo, cData)
 	cQuery := "SELECT COUNT(*) AS QTD, MIN(B71.R_E_C_N_O_) AS PRIREC, MIN(B71.B71_DATMOV) AS PRIDAT" +;
 		" FROM " + RetSqlName("B71") + " B71" +;
 		" WHERE B71.B71_FILIAL = '" + xFilial("B71") + "'" +;
-		" AND B71.B71_CODDEP = '" + __CODDEP + "'" +;
+		fFiltroDep() +;
 		" AND B71.B71_DATMOV < '" + fDataMov(cData) + "'" +;
 		" AND B71.R_E_C_N_O_ > " + cValToChar(nUltimo) +;
 		" AND B71.D_E_L_E_T_ = ' '"
@@ -1424,9 +1672,12 @@ Static Function fAvisaAtrasadas(nUltimo, cData)
 Return
 
 /*/{Protheus.doc} fMontaB71
-Resolve guia e anexos de uma B71.
+Resolve guia, B53 (tipo da guia) e anexos de uma B71.
+B71 da BEA: guarda a chave da BEA do registro do B71_RECMOV (itens da BE2) e, com o BEA_GUIORI vazio,
+usa essa chave como numero da guia.
 @type function
-@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov, aPessoas}
+@return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov, aPessoas,
+	cTipo, cB53Gui, cChvBea}
 /*/
 Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 
@@ -1435,6 +1686,8 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	Local nRecOri := Val(cRecMov)
 	Local nPosCpo := 0
 	Local cGuia   := ""
+	Local cFalta  := ""
+	Local aB53    := {}
 
 	aItem[__I_RECNO]  := nRecno
 	aItem[__I_ALIMOV] := cAliMov
@@ -1444,6 +1697,9 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_TEXTOS] := {}
 	aItem[__I_DATMOV] := cDatMov
 	aItem[__I_PESSOAS] := {}
+	aItem[__I_TIPO]   := ""
+	aItem[__I_B53GUI] := ""
+	aItem[__I_CHVBEA] := ""
 
 	If Empty(cCampo)
 		aItem[__I_STATUS] := __ST_ALIAS
@@ -1461,17 +1717,99 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 		Return aItem
 	EndIf
 
+	If cAliMov == "BEA"
+		aItem[__I_CHVBEA] := fChaveBea()
+	EndIf
+
 	cGuia := AllTrim((cAliMov)->(FieldGet(nPosCpo)))
+	If Empty(cGuia)
+		cGuia := aItem[__I_CHVBEA]
+	EndIf
 	If Empty(cGuia)
 		aItem[__I_STATUS] := __ST_SEMGUIA
 		Return aItem
 	EndIf
 
 	aItem[__I_NUMGUI] := cGuia
+
+	If !fCamposOk("B53", __CPO_B53, @cFalta)
+		aItem[__I_STATUS] := __ST_CPOB53
+		Return aItem
+	EndIf
+
+	aB53 := fLeB53(cGuia)
+	If Len(aB53) == 0
+		aItem[__I_STATUS] := __ST_SEMB53
+		Return aItem
+	EndIf
+	aItem[__I_TIPO]   := aB53[1]
+	aItem[__I_B53GUI] := aB53[2]
+
 	aItem[__I_ANEXOS] := fBuscaAnexos(cGuia)
 	aItem[__I_STATUS] := IIf(Len(aItem[__I_ANEXOS]) > 0, __ST_OK, __ST_SEMANEXO)
 
 Return aItem
+
+/*/{Protheus.doc} fChaveBea
+Chave da BEA posicionada (fPosOrigem): OPEMOV + ANOAUT + MESAUT + NUMAUT, sem AllTrim para manter
+o tamanho de cada parte (__NUMGUI_PT).
+@type function
+@return character, chave de 18 posicoes, ou "" se algum campo nao existir no dicionario ou estiver vazio
+/*/
+Static Function fChaveBea()
+
+	Local aCampos := __CPO_CHVBEA
+	Local cChave  := ""
+	Local cFalta  := ""
+	Local cParte  := ""
+	Local nI      := 0
+
+	If !fCamposOk("BEA", aCampos, @cFalta)
+		fLog("WARN", "  chave da BEA indisponivel: " + cFalta + " nao existe no dicionario")
+		Return ""
+	EndIf
+
+	For nI := 1 To Len(aCampos)
+		cParte := BEA->(FieldGet(FieldPos(aCampos[nI])))
+		If Empty(cParte)
+			Return ""
+		EndIf
+		cChave += cParte
+	Next nI
+
+Return cChave
+
+/*/{Protheus.doc} fLeB53
+Guia na auditoria (B53) pelo numero da guia. Com mais de uma B53 para a guia (origens diferentes),
+usa a mais recente.
+@type function
+@param cGuia, character, numero da guia original/referencia (sem espacos)
+@return array, {cTipo, cNumGui} da B53, ou {} se a guia nao estiver na B53
+/*/
+Static Function fLeB53(cGuia)
+
+	Local aRet    := {}
+	Local nTam    := TamSX3("B53_NUMGUI")[1]
+	Local cNumGui := StrTran(Left(cGuia, nTam), "'", "''")
+	Local cQuery  := ""
+	Local cAlias  := ""
+
+	cQuery := "SELECT B53.B53_TIPO, B53.B53_NUMGUI" +;
+		" FROM " + RetSqlName("B53") + " B53" +;
+		" WHERE B53.B53_FILIAL = '" + xFilial("B53") + "'" +;
+		" AND B53.B53_NUMGUI = '" + PadR(cNumGui, nTam) + "'" +;
+		" AND B53.D_E_L_E_T_ = ' '" +;
+		" ORDER BY B53.R_E_C_N_O_ DESC"
+
+	cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
+
+	If !(cAlias)->(Eof())
+		aRet := {AllTrim(cValToChar((cAlias)->B53_TIPO)), AllTrim((cAlias)->B53_NUMGUI)}
+	EndIf
+
+	(cAlias)->(DbCloseArea())
+
+Return aRet
 
 /*/{Protheus.doc} fPessoas
 Dados pessoais da guia que a API mascara antes de enviar o texto ao Claude: nomes da tabela origem
@@ -1634,14 +1972,19 @@ Static Function fLogB71(aItem)
 
 	Do Case
 	Case aItem[__I_STATUS] == __ST_OK
-		cMsg += "guia " + aItem[__I_NUMGUI] + ", " + cValToChar(Len(aItem[__I_ANEXOS])) + " anexo(s):"
+		cMsg += "guia " + aItem[__I_NUMGUI] + fDescTipo(aItem) + ", " + cValToChar(Len(aItem[__I_ANEXOS])) + " anexo(s):"
 		For nI := 1 To Len(aItem[__I_ANEXOS])
 			cMsg += " [" + aItem[__I_ANEXOS][nI][__A_CODOBJ] + "] " + aItem[__I_ANEXOS][nI][__A_OBJETO]
 		Next nI
 	Case aItem[__I_STATUS] == __ST_SEMANEXO
-		cMsg += "guia " + aItem[__I_NUMGUI] + " sem anexo no banco de conhecimento"
+		cMsg += "guia " + aItem[__I_NUMGUI] + fDescTipo(aItem) + ", sem anexo no banco de conhecimento"
+	Case aItem[__I_STATUS] == __ST_SEMB53
+		cMsg += "guia " + aItem[__I_NUMGUI] + fGuiaBea(aItem) + " nao encontrada na B53; nada a verificar"
+	Case aItem[__I_STATUS] == __ST_CPOB53
+		cNivel := "ERROR"
+		cMsg   += "campo " + fListaCpo(__CPO_B53) + " nao existe no dicionario da B53"
 	Case aItem[__I_STATUS] == __ST_SEMGUIA
-		cMsg += "campo da guia vazio na tabela origem"
+		cMsg += "campo da guia vazio na tabela origem" + IIf(aItem[__I_ALIMOV] == "BEA", " e chave da BEA indisponivel", "")
 	Case aItem[__I_STATUS] == __ST_ORIGEM
 		cNivel := "WARN"
 		cMsg   += "registro origem nao encontrado ou deletado"
@@ -1656,6 +1999,32 @@ Static Function fLogB71(aItem)
 	fLog(cNivel, cMsg)
 
 Return
+
+/*/{Protheus.doc} fDescTipo
+@type function
+@return character, " (B53_TIPO x, itens z)" para o log
+/*/
+Static Function fDescTipo(aItem)
+Return fGuiaBea(aItem) + " (B53_TIPO " + aItem[__I_TIPO] + ", itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")"
+
+/*/{Protheus.doc} fGuiaBea
+@type function
+@return character, " pela chave da BEA" quando o numero da guia veio da BEA (BEA_GUIORI vazio), senao ""
+/*/
+Static Function fGuiaBea(aItem)
+Return IIf(!Empty(aItem[__I_CHVBEA]) .And. aItem[__I_NUMGUI] == aItem[__I_CHVBEA], " pela chave da BEA", "")
+
+/*/{Protheus.doc} fListaCpo
+@type function
+@return character, campos separados por "/"
+/*/
+Static Function fListaCpo(aCampos)
+
+	Local cRet := ""
+
+	aEval(aCampos, {|x| cRet += IIf(Empty(cRet), "", "/") + x})
+
+Return cRet
 
 /*/{Protheus.doc} fLeWatermark
 Le o ultimo R_E_C_N_O_ da B71 ja verificado (SX6 Z_NOTIENCA).
@@ -1708,12 +2077,71 @@ Static Function fValidaCfg()
 
 Return .T.
 
+/*/{Protheus.doc} fApiBase
+@type function
+@return character, URL base da API: __URL_PROD quando o ambiente e __ENV_PROD, senao __URL_DEV
+/*/
+Static Function fApiBase()
+Return IIf(Upper(AllTrim(GetEnvServer())) == __ENV_PROD, __URL_PROD, __URL_DEV)
+
 /*/{Protheus.doc} fApiUrl
 @type function
-@return character, URL do POST __API_PATH: __URL_PROD quando o ambiente e __ENV_PROD, senao __URL_DEV
+@return character, URL do POST __API_PATH
 /*/
 Static Function fApiUrl()
-Return IIf(Upper(AllTrim(GetEnvServer())) == __ENV_PROD, __URL_PROD, __URL_DEV) + __API_PATH
+Return fApiBase() + __API_PATH
+
+/*/{Protheus.doc} fIaHabilitada
+Pergunta a API se a IA esta ligada (GET __CFG_PATH, IA_HABILITADA no .env da API).
+@type function
+@param lIa, logical, (por referencia) .T. se a IA esta ligada
+@param cModelo, character, (por referencia) modelo da IA, quando ligada
+@param cErro, character, (por referencia) motivo da falha
+@return logical, .F. se a API nao respondeu o flag (falha temporaria: a execucao nao avanca o watermark)
+/*/
+Static Function fIaHabilitada(lIa, cModelo, cErro)
+
+	Local oRest   := Nil
+	Local oResp   := JsonObject():New()
+	Local aHeader := {}
+	Local cHost   := ""
+	Local cPath   := ""
+	Local cResp   := ""
+
+	lIa     := .F.
+	cModelo := ""
+	cErro   := ""
+
+	fSplitUrl(fApiBase() + __CFG_PATH, @cHost, @cPath)
+	aAdd(aHeader, "Authorization: Bearer " + AllTrim(__API_TOKEN))
+
+	oRest := FWRest():New(cHost)
+	oRest:SetPath(cPath)
+	oRest:SetTimeOut(60)
+	oRest:Get(aHeader)
+
+	cResp := oRest:GetResult()
+	If Empty(cResp)
+		cErro := "sem resposta da API (" + AllTrim(cValToChar(oRest:GetLastError())) + ")"
+		Return .F.
+	EndIf
+
+	If ValType(oResp:FromJson(cResp)) == "C" .Or. ValType(oResp["ia"]) != "L"
+		Do Case
+		Case "Cannot GET" $ cResp
+			cErro := "API sem o " + __CFG_PATH + ": atualizar a API"
+		Case ValType(oResp["erro"]) == "C"
+			cErro := fDecUtf8(oResp["erro"])
+		Otherwise
+			cErro := "resposta invalida da API: " + Left(cResp, 200)
+		EndCase
+		Return .F.
+	EndIf
+
+	lIa     := oResp["ia"]
+	cModelo := IIf(ValType(oResp["modelo"]) == "C", oResp["modelo"], "")
+
+Return .T.
 
 /*/{Protheus.doc} fDataMov
 @type function

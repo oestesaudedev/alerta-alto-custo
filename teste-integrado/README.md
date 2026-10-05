@@ -1,6 +1,6 @@
 # Etapa 10 — Teste integrado do OSMEDALTC
 
-Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → anexos → API/SFTP → match → e-mail → `Z_NOTIENCA`. A 2ª execução não pode reprocessar B71 nem reenviar e-mail.
+Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → B53 (tipo da guia) → procedimentos de alto custo → (IA ligada) anexos → API/SFTP → e-mail → `Z_NOTIENCA`. A 2ª execução não pode reprocessar B71 nem reenviar e-mail. Rodar o roteiro com a IA desligada e ligada (`IA_HABILITADA` no `.env` da API, reiniciando a API a cada troca).
 
 | Arquivo | Para que serve |
 |---|---|
@@ -12,7 +12,8 @@ Roteiro para validar o job de ponta a ponta no Protheus de teste: B71 → anexos
 ## 1. Pré-requisitos
 
 - API no ar e com os testes passando: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1`.
-- API alcançável pelo AppServer na URL do ambiente: fora do `CYWSXT_PROD` o job usa `http://localhost:3010/verificar-sftp`, então a API precisa estar na mesma máquina do AppServer; no `CYWSXT_PROD`, `http://10.1.5.14:6177/verificar-sftp`. A API precisa ser a versão com o `/verificar-sftp`. A linha `Config: ambiente ... | API ...` do log mostra a URL escolhida.
+- API alcançável pelo AppServer na URL do ambiente: fora do `CYWSXT_PROD` o job usa `http://localhost:3010`, então a API precisa estar na mesma máquina do AppServer; no `CYWSXT_PROD`, `http://10.1.5.14:6177`. A API precisa ser a versão com o `GET /config` e o `/verificar-sftp`. A linha `Config: ambiente ... | API ...` do log mostra a URL escolhida.
+- `B53_TIPO` existe no dicionário da B53 e a chave dos itens bate com o `B53_NUMGUI`: `levantamento/07-b53-tipgui-itens.sql`.
 - SX6: `Z_NOTIENCA` (via `U_OSCRIAZNOT`) e `Z_MEDAPIT` com o mesmo valor do `API_TOKEN` do `.env` da API.
 - SMTP: `MV_RELSERV`, `MV_RELACNT`, `MV_RELPSW`, `MV_RELAUTH`, `MV_RELSSL`, `MV_RELTLS`, `MV_RELFROM` (ver `configuracoes.md`).
 - `__MAIL_TO` apontando para uma caixa que você consegue ler.
@@ -31,16 +32,17 @@ Confere cada peça **sem gravar `Z_NOTIENCA` e sem enviar e-mail**. Todas as lin
 |---|---|
 | Token `Z_MEDAPIT` | Cadastrar o parâmetro com o valor do `API_TOKEN` |
 | Watermark `Z_NOTIENCA` | Rodar `U_OSCRIAZNOT`; o conteúdo tem de ser só dígitos |
+| Flag da IA (`GET /config`) | API fora do alcance, token diferente ou API antiga sem o `/config`. Com `[OK]`, a linha diz se a IA está habilitada ou desabilitada: conferir com o `IA_HABILITADA` do `.env` |
 | Medicamentos de alto custo | Nenhum `BR8_ALTCUS = '1'` com BA8 (conferir com `conferencia.sql`, consulta 4) |
-| B71 na janela | Lista as B71 e o status de cada uma. Falha só se houver `CAMPO_GUIA_INEXISTENTE` (corrigir o mapa em `fCampoGuia`) |
+| B71 na janela | Lista as B71 com o status, o `B53_TIPO` e a tabela de itens (BE2, BQV ou B4C) e, para cada guia, a chave da busca e todos os procedimentos lançados (`[BE2] codpad codigo - descrição \| qtd \| valor`, com `\| ALTO CUSTO` nos de alto custo). Falha se houver `CAMPO_GUIA_INEXISTENTE` (corrigir o mapa em `fCampoGuia`), `CAMPO_B53_INEXISTENTE` (`B53_TIPO` fora do dicionário) ou erro na consulta dos itens |
 | API + token + SFTP | O job pede um arquivo que não existe; o esperado é a API responder "não encontrado no SFTP". Outra mensagem indica API fora do alcance do AppServer, token diferente (401) ou SFTP inacessível |
 | SMTP | Conexão/autenticação com os `MV_REL*` |
 
-Com um arquivo real, `U_chkMEDALTC("<ACB_OBJETO>")` extrai o texto e lista os medicamentos que seriam detectados, sem enviar nada. É o jeito de escolher um anexo que gere alerta. Se o TDS não aceitar argumentos na chamada, teste o download real pela API com `SFTP_ARQUIVO=<nome>` no `rodar-fase4.ps1`.
+Com a IA ligada e um arquivo real, `U_chkMEDALTC("<ACB_OBJETO>")` extrai o texto e lista os medicamentos que seriam detectados, sem enviar nada. É o jeito de escolher um anexo que gere alerta. Com a IA desligada, o arquivo é ignorado (o job não enviaria anexos). Se o TDS não aceitar argumentos na chamada, teste o download real pela API com `SFTP_ARQUIVO=<nome>` no `rodar-fase4.ps1`.
 
 ## 4. Preparar a B71 de teste
 
-1. Escolher uma B71 do departamento `012` com anexo que cite um medicamento de alto custo (`levantamento/02-amostra-b71-acb.sql`, consulta 2).
+1. Escolher uma B71 do departamento `012` cuja guia tenha procedimento com `BR8_ALTCUS = '1'` (`levantamento/07-b53-tipgui-itens.sql`, consultas 3 e 4) e, para o teste com a IA ligada, anexo que cite um medicamento de alto custo (`levantamento/02-amostra-b71-acb.sql`, consulta 2).
 2. Se a B71 não for de hoje, preencher `#DEFINE __DATA_DBG "AAAAMMDD"` com o `B71_DATMOV` dela e recompilar. O job registra um `WARN` enquanto estiver preenchido.
 3. Posicionar `Z_NOTIENCA` em `B71_RECNO - 1`: pelo Configurador (SX6), por `U_OSCRIAZNOT("<valor>")` ou direto no passo 5 com `U_tstMEDALTC("<valor>")`.
 
@@ -61,17 +63,32 @@ Sem o `U_tstMEDALTC`, o mesmo teste é manual: `U_dbgMEDALTC`, anotar o `Z_NOTIE
 
 ## 6. Conferir o resultado
 
-- **E-mail** em `__MAIL_TO`: assunto `[Alto custo] Guia <guia> - <n> medicamento(s) identificado(s)`, com guia, origem, B71, código, descrição, valor de tabela, valor na guia, termo e anexo. Nenhum trecho do texto do anexo.
+- **E-mail** em `__MAIL_TO`: assunto `[Alto custo] Guia <guia> - <n> item(ns) de alto custo`, com guia, tipo da guia (B53), origem, B71 e, por item, código, descrição, detecção, quantidade, valor de tabela e valor na guia. Com a IA ligada, também termo, anexo e observação da IA. Nenhum trecho do texto do anexo.
 - **Uma única mensagem** por B71: a 2ª execução não pode gerar outra.
 - **`conferencia.sql`**, consulta 2: todas as B71 da janela como `VERIFICADA`.
 - **Log**: nenhuma linha com o conteúdo do anexo, só tamanho, método e tempo.
-- Colunas de valor com `n/d`: conferir os campos com `levantamento/05-campos-valor.sql`. Não bloqueia o job.
+- Valor de tabela com `n/d`: conferir os campos com `levantamento/05-campos-valor.sql`. Não bloqueia o job.
+
+Cenários da camada de procedimentos:
+
+| Cenário | Esperado |
+|---|---|
+| IA desligada, guia com procedimento de alto custo | Log `IA desabilitada ...`; nenhum anexo enviado à API; e-mail com a detecção "Procedimento" e sem as colunas da IA |
+| IA desligada, guia sem procedimento de alto custo | `nenhum item de alto custo na guia`, sem e-mail, watermark avança |
+| IA ligada, procedimento citado no anexo | Detecção "Procedimento + IA", observação "confirmado pela IA: ..." |
+| IA ligada, procedimento não citado no anexo | Detecção "Procedimento", observação "nao citado nos anexos" |
+| IA ligada, guia sem anexo | Detecção "Procedimento", observação "sem anexo para confirmar" |
+| IA ligada, medicamento só no anexo | Detecção "Anexo (IA)", valor na guia "nao consta" |
+| `B53_TIPO` 11 em B71 com `B71_ALIMOV = B4Q` | Log da B71 com `itens BQV` e os procedimentos com `[BQV]` |
+| `B53_TIPO` 1, 2, 3, 4, 5 ou 7 / outro | Log da B71 com `itens BE2` / `itens B4C` e os procedimentos com `[BE2]` / `[B4C]` |
+| B71 da BEA com `BEA_GUIORI` vazio | Log `guia <chave> pela chave da BEA` (antes: "campo da guia vazio") e itens da BE2 com `chave da BEA recno <B71_RECMOV>` |
+| Guia com itens, mas log `nenhum procedimento lancado` | Chave ou tabela de itens diferente na base: conferir com `levantamento/07-b53-tipgui-itens.sql` (consulta 3) |
 
 ## 7. Cenários de falha (recomendado)
 
 | Cenário | Como provocar | Esperado |
 |---|---|---|
-| API fora | Parar o container da API e rodar `U_dbgMEDALTC` | `ERROR` na B71, `Z_NOTIENCA` não avança; ao subir a API, a próxima execução retoma a mesma B71 |
+| API fora | Parar o container da API e rodar `U_dbgMEDALTC` | `ERROR` no `GET /config` (flag da IA), nenhuma B71 processada, `Z_NOTIENCA` não avança; ao subir a API, a próxima execução retoma dali |
 | Token errado | Alterar `Z_MEDAPIT` | 401 da API, `Z_NOTIENCA` não avança |
 | SMTP fora | `MV_RELSERV` inválido | "falha na conexao", `Z_NOTIENCA` não avança; o e-mail sai na próxima execução |
 | Anexo inexistente | B71 cujo `ACB_OBJETO` não está no SFTP | `WARN ... descartado`, a B71 é concluída e o watermark avança |

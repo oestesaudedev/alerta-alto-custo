@@ -1,45 +1,53 @@
-# Alerta de medicamentos de alto custo (OSMEDALTC)
+# Alerta de itens de alto custo (OSMEDALTC)
 
-Avisa a auditoria por e-mail quando um anexo de guia (PDF ou imagem, no banco de conhecimento do Protheus) cita um medicamento de alto custo.
+Avisa a auditoria por e-mail quando uma guia tem procedimento de alto custo lançado e, com a IA ligada, quando um anexo da guia (PDF ou imagem, no banco de conhecimento do Protheus) cita um medicamento de alto custo.
 
 O ADVPL/TLPP não lê PDF nem faz OCR, e o `FTPConnect` não fala SFTP. Por isso a solução tem duas partes:
 
 | Parte | Onde roda | O que faz |
 |---|---|---|
-| **Job TLPP `U_OSMEDALTC`** ([OS_MEDALTC.tlpp](totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp)) | AppServer Protheus, pelo Scheduler a cada 15 min | Busca as movimentações novas, encontra os anexos, manda à API o nome de cada anexo e a lista de medicamentos de alto custo, apura o valor na guia e envia o e-mail |
-| **API NestJS** ([api-extracao-texto/](api-extracao-texto/)) | Servidor Linux ou Docker na rede interna | Baixa o arquivo do SFTP, extrai o texto (`pdf-parse` para PDF com texto, `pdftoppm` + Tesseract `por` para PDF escaneado e imagens) e pede ao Claude (Anthropic) os medicamentos da lista citados no texto |
+| **Job TLPP `U_OSMEDALTC`** ([OS_MEDALTC.tlpp](totvsCustomizacoes/Auditoria/OS_MEDALTC.tlpp)) | AppServer Protheus, pelo Scheduler a cada 15 min | Busca as movimentações novas, verifica os procedimentos de alto custo lançados na guia e, com a IA ligada, manda à API o nome de cada anexo e a lista de medicamentos de alto custo; junta os resultados e envia o e-mail |
+| **API NestJS** ([api-extracao-texto/](api-extracao-texto/)) | Servidor Linux ou Docker na rede interna | Informa se a IA está ligada (`GET /config`). Com ela ligada, baixa o arquivo do SFTP, extrai o texto (`pdf-parse` para PDF com texto, `pdftoppm` + Tesseract `por` para PDF escaneado e imagens) e pede ao Claude (Anthropic) os medicamentos da lista citados no texto |
 
 ## Como funciona
 
 ```
 Scheduler (15 min) → U_OSMEDALTC
   1. Lê Z_NOTIENCA (último R_E_C_N_O_ da B71 já verificado)
-  2. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1') INNER JOIN BA8 + valor de tabela (BD4)
-  3. B71 novas: R_E_C_N_O_ > Z_NOTIENCA, B71_DATMOV = hoje, B71_CODDEP = '012'
-  4. Para cada B71:
+  2. GET /config na API: IA ligada ou não (IA_HABILITADA no .env da API)
+  3. Carrega os medicamentos: BR8 (BR8_ALTCUS = '1', BR8_CODPAD em __CODPAD_BR8) LEFT JOIN BA8 + valor de tabela (BD4)
+  4. B71 novas: R_E_C_N_O_ > Z_NOTIENCA, B71_DATMOV = hoje, B71_CODDEP = '012'
+  5. Para cada B71:
        B71_ALIMOV + B71_RECMOV → tabela origem (BEA | BE4 | B44 | B4Q | B4A) → número da guia
-       → B53 (B53_NUMGUI) → AC9 (AC9_CODENT contém a guia) → ACB (ACB_OBJETO = nome do arquivo)
-       → POST /verificar-sftp {arquivo, ambiente, medicamentos, mascarar} na API, que:
-           baixa do SFTP e extrai o texto
-           mascara os dados pessoais e pergunta ao Claude quais medicamentos da lista o texto cita
-           devolve os achados de confiança alta ou média (sem o texto); os de confiança baixa, como aviso
-       → valor na guia → achou? um e-mail por B71 para __MAIL_TO
+         (BEA: chave OPEMOV+ANOAUT+MESAUT+NUMAUT do próprio registro nos itens da BE2 e, sem BEA_GUIORI, como guia)
+       → B53 (B53_NUMGUI): B53_TIPO e B71_ALIMOV escolhem a tabela de itens
+           1, 2, 3, 4, 5, 7 → BE2 | 11 com B71_ALIMOV = B4Q → BQV | demais → B4C
+       → procedimentos da guia (chave = B53_NUMGUI) com BR8_ALTCUS = '1' e CODPAD 00 ou 20, com qtd e valor na guia
+       → só com a IA ligada:
+           AC9 (AC9_CODENT contém a guia) → ACB (ACB_OBJETO = nome do arquivo)
+           → POST /verificar-sftp {arquivo, ambiente, medicamentos, mascarar} na API, que:
+               baixa do SFTP e extrai o texto
+               mascara os dados pessoais e pergunta ao Claude quais medicamentos da lista o texto cita
+               devolve os achados de confiança alta ou média (sem o texto); os de confiança baixa, como aviso
+           → junta: procedimento confirmado pela IA / não citado / medicamento só no anexo
+       → algum item? um e-mail por B71 para __MAIL_TO
        → grava Z_NOTIENCA = recno da B71
 ```
 
 Regras importantes:
 
 - **Sem reprocessamento.** O `Z_NOTIENCA` avança após cada B71 concluída, com ou sem anexo, medicamento ou e-mail. A próxima execução não repete e-mail.
-- **Falha temporária não avança.** API fora, timeout (300 s por anexo), token errado, SFTP inacessível, IA indisponível (Claude fora, chave inválida, `IA_HABILITADA=false`), SMTP fora, requisição recusada pela API (HTTP 400) ou API antiga, sem o `/verificar-sftp` (HTTP 404): o job para na B71 e a retoma na próxima execução.
+- **Falha temporária não avança.** API fora (inclusive no `GET /config` do início da execução), timeout (300 s por anexo), token errado, SFTP inacessível, IA ligada mas indisponível (Claude fora, chave inválida), erro na consulta dos itens da guia, SMTP fora, requisição recusada pela API (HTTP 400) ou API antiga, sem o `/config` ou o `/verificar-sftp` (HTTP 404): o job para na B71 e a retoma na próxima execução. `B53_TIPO` ausente no dicionário também bloqueia (`CAMPO_B53_INEXISTENTE`).
 - **Falha definitiva é descartada.** Arquivo inexistente no SFTP, extensão não suportada ou nome inválido: o anexo é ignorado e a B71 segue.
 - **Só o dia corrente.** O agendamento não processa B71 de dias anteriores que ficaram pendentes (job parado na virada do dia); o log registra um `WARN` com a quantidade. Para verificá-las, use `U_dataMEDALTC` (ver [Manutenção](#manutenção-do-dia-a-dia)).
 - **PDF escaneado longo.** A API passa pelo OCR só as primeiras `PDF_MAX_PAGINAS` páginas (padrão 30), para responder dentro do timeout. Medicamento citado só depois disso não é detectado; o log da API avisa.
 - **Execução única.** `LockByName` impede duas execuções simultâneas.
 - **Dados de saúde.** O e-mail e o log não trazem trechos do texto do anexo, só tamanho, método e tempo.
-- **A IA (Claude) é a verificação.** O Claude lê o texto de cada anexo e aponta os medicamentos da lista citados pelo nome do cadastro, nome comercial, princípio ativo, abreviação ou com erro de OCR. Confiança alta ou média entra no alerta; baixa só no log. Sem a IA, nenhum anexo é verificado: a API responde "IA indisponivel" e o job tenta de novo na próxima execução. Antes do envio, a API mascara CPF, CNS, carteirinha, telefone, e-mail, data de nascimento, os nomes do beneficiário e do solicitante da guia (enviados pelo job) e o que vier depois de rótulos como "Paciente:". O texto do anexo não volta para o Protheus. Detalhes em [configuracoes.md](configuracoes.md#11-ia-claude-a-verificação-dos-medicamentos).
+- **Procedimentos primeiro.** Todo procedimento lançado na guia com `BR8_ALTCUS = '1'` e `CODPAD` `00` ou `20` entra no alerta, com ou sem IA. Guia sem anexo também é verificada. Detalhes em [configuracoes.md](configuracoes.md#25-procedimentos-da-guia-camada-antes-da-ia).
+- **A IA (Claude) é opcional.** Com `IA_HABILITADA=true`, o Claude lê o texto de cada anexo e aponta os medicamentos da lista citados pelo nome do cadastro, nome comercial, princípio ativo, abreviação ou com erro de OCR. Ela confirma os procedimentos ("Procedimento + IA") e acrescenta os medicamentos citados que não foram lançados ("Anexo (IA)"); procedimento não citado continua no alerta. Confiança alta ou média entra no alerta; baixa só no log. Com `IA_HABILITADA=false`, os anexos não são enviados e o alerta sai só pelos procedimentos. Antes do envio, a API mascara CPF, CNS, carteirinha, telefone, e-mail, data de nascimento, os nomes do beneficiário e do solicitante da guia (enviados pelo job) e o que vier depois de rótulos como "Paciente:". O texto do anexo não volta para o Protheus. Detalhes em [configuracoes.md](configuracoes.md#11-ia-claude-confirmação-nos-anexos-opcional).
 - **Log.** Tudo o que o job registra vai para `\logpls\alto_custo_AAAAMMDD.log` no RootPath (um arquivo por dia, criado sozinho, gravado pela função padrão do PLS `PlsPtuLog`, com gravação própria como fallback) e para o console do AppServer. Os arquivos antigos são apagados manualmente.
 
-O e-mail traz guia, origem, recno da B71 e, por medicamento: código, descrição BR8, valor de tabela (BD4, vigência mais recente), valor na guia (soma dos itens da guia de origem), termo encontrado, anexo e a observação da IA (confiança e motivo). Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
+O e-mail traz guia, tipo da guia (B53), origem, recno da B71 e, por item: código, descrição BR8, detecção (Procedimento, Procedimento + IA ou Anexo (IA)), quantidade e valor na guia (quantidade solicitada × valor unitário dos itens), valor de tabela (BD4, vigência mais recente) e, com a IA ligada, termo encontrado, anexo e a observação da IA (confirmação, confiança e motivo). Valor indisponível no dicionário aparece como `n/d` e não bloqueia o job.
 
 ## Configuração inicial
 
@@ -62,7 +70,7 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
    | `SFTP_PROD_HOSTKEY` / `SFTP_DEV_HOSTKEY` | Impressões digitais do servidor SFTP (`SHA256:...`, separadas por vírgula), já preenchidas no `.env.example`. Obrigatórias quando o `HOST` do perfil está preenchido; a API recusa servidor com chave diferente. Para conferir: `ssh-keyscan -p PORTA HOST \| ssh-keygen -lf -` |
    | `SFTP_DIR` | Pasta dos arquivos do `ACB_OBJETO` (`/dirdoc/co01/shared/`) |
    | `PDF_MAX_PAGINAS` | Opcional, padrão `30`: páginas de PDF escaneado passadas pelo OCR |
-   | `IA_HABILITADA` / `ANTHROPIC_API_KEY` | **Obrigatórios**: `true` e a chave da Anthropic. Sem eles nenhum anexo é verificado. Exigem saída HTTPS para `api.anthropic.com`. Modelo em `IA_MODELO` (padrão `claude-sonnet-5-5`; `claude-haiku-4-5` custa menos) |
+   | `IA_HABILITADA` / `ANTHROPIC_API_KEY` | `false`: alerta só pelos procedimentos da guia. `true` + a chave da Anthropic: o Claude também verifica os anexos (exige saída HTTPS para `api.anthropic.com`). Modelo em `IA_MODELO` (padrão `claude-sonnet-5-5`; `claude-haiku-4-5` custa menos). Mudar exige reiniciar a API |
 
 3. Subir a API:
    - **Docker**: produção com `API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build`; dev/testes acrescentando `-f infra/docker-compose.dev.yml` (monta `test/` e habilita o `POST /extrair`) → `http://localhost:3010`. Sem `API_BIND_IP`, a porta fica só em `127.0.0.1`. Gera a imagem `alerta-alto-custo` e sobe o container `api-extracao-texto`; `docker ps` deve mostrar `healthy` (`GET /health`).
@@ -85,7 +93,7 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
    |---|---|
    | `__MAIL_TO` | Caixa que recebe os alertas (hoje aponta para um e-mail pessoal) |
    | `__ENV_PROD` / `__URL_PROD` | Ambiente `CYWSXT_PROD` usa `http://10.1.5.14:6177`; qualquer outro usa `__URL_DEV` (`http://localhost:3010`) |
-   | `__CODDEP` | Departamento da B71 (`012`) |
+   | `__CODDEP` | Departamentos da B71 (`{"012"}`; `{}` = todos) |
    | `__DATA_DBG` / `__CODOBJ` | Filtros de depuração. **Vazios em produção** |
 
 4. **Compilar** `OS_MEDALTC.tlpp` no RPO.
@@ -118,8 +126,10 @@ Não exponha a porta da API na internet. Em produção, libere a `6177` só para
 
 | Mudança | Como |
 |---|---|
-| Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8 (precisa ter BA8 correspondente). Vale na próxima execução |
+| Incluir ou tirar medicamento | Campo `BR8_ALTCUS` na BR8, com `BR8_CODPAD` `00` ou `20` (precisa ter BA8 correspondente). Vale na próxima execução. Outras tabelas padrão: `__CODPAD_BR8` no fonte + novo patch |
+| Ligar ou desligar a IA | `IA_HABILITADA` no `.env` (com `true`, `ANTHROPIC_API_KEY` preenchida) + reiniciar a API. Vale na próxima execução do job |
 | Trocar o modelo do Claude | `IA_MODELO` no `.env` + reiniciar a API |
+| Mudar a regra do tipo de guia | `__TIP_BE2` / `__TIP_BQV` / `fCfgProc()` no fonte + recompilar |
 | Trocar o token | `API_TOKEN` no `.env` + reiniciar a API (pm2: `pm2 restart api-extracao-texto`; Docker: `docker compose -f infra/docker-compose.yml up -d`, pois `docker restart` não relê o `.env`), e `Z_MEDAPIT` no mesmo momento |
 | Mudar destinatário ou URL da API | `__MAIL_TO` / `__URL_PROD` no fonte + recompilar |
 | Reprocessar uma B71 do dia | Pausar o agendamento e gravar `Z_NOTIENCA` = recno − 1. Reenvia o e-mail dela e das seguintes |
@@ -132,12 +142,13 @@ Não altere o `Z_NOTIENCA` com o job rodando: diminuir reenvia e-mails, aumentar
 | Pasta / arquivo | Conteúdo |
 |---|---|
 | [totvsCustomizacoes/Auditoria/](totvsCustomizacoes/Auditoria/) | Fonte do job (`OS_MEDALTC.tlpp`), o único que vai para produção |
-| [api-extracao-texto/](api-extracao-texto/) | API NestJS (`POST /verificar-sftp`, usado pelo job; `POST /extrair-sftp`, do fonte anterior; `GET /health`; `POST /verificar` e `/extrair`, só para testes), `Dockerfile` e testes |
+| [api-extracao-texto/](api-extracao-texto/) | API NestJS (`GET /config` e `POST /verificar-sftp`, usados pelo job; `POST /extrair-sftp`, do fonte anterior; `GET /health`; `POST /verificar` e `/extrair`, só para testes), `Dockerfile` e testes |
 | [infra/](infra/) | `docker-compose.yml` (produção) e `docker-compose.dev.yml` (dev), provisionamento Linux e pm2 |
 | [levantamento/](levantamento/) | Checklist e SQLs para validar tabelas, joins e campos na base |
 | [teste-integrado/](teste-integrado/) | Roteiro de teste, `OS_TSTMEDALTC.tlpp` e `conferencia.sql` |
 | [implantacao/](implantacao/) | Roteiro de produção, monitoramento, rollback e `monitoramento.sql` |
 | [configuracoes.md](configuracoes.md) | Referência de todos os parâmetros |
 | [preciso-fazer-o-seguinte-indexed-pie.md](preciso-fazer-o-seguinte-indexed-pie.md) | Especificação técnica e planejamento em etapas |
+| [planejamentos/](planejamentos/) | Planejamentos de evoluções (ex.: camada de procedimentos antes da IA) |
 
 Para ir a produção, siga [implantacao/README.md](implantacao/README.md), depois de aprovar o [teste integrado](teste-integrado/README.md).

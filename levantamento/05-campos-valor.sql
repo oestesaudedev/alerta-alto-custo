@@ -1,8 +1,9 @@
 -- =============================================================================
--- Confirma os campos usados nas colunas "Valor de tabela" e "Valor na guia" do e-mail
--- (fCarregaVlrTab e fCfgItens em OS_MEDALTC.tlpp).
+-- Confirma os campos usados na coluna "Valor de tabela" do e-mail (fCarregaVlrTab em OS_MEDALTC.tlpp).
+-- Os itens da guia (qtd e "Valor na guia") agora vem da camada de procedimentos: ver 07-b53-tipgui-itens.sql.
+-- As consultas 2 e 3 ficam como referencia dos campos de todas as tabelas de itens.
 -- Substituir SX3010 pelo SX3 da empresa (ex.: empresa 01 -> SX3010).
--- Campo que nao aparecer aqui: ajustar o nome em fCfgItens() / fCarregaVlrTab().
+-- Campo que nao aparecer aqui: ajustar o nome em fCarregaVlrTab() / fCfgProc().
 -- =============================================================================
 
 -- 1) Valor de tabela: BA8_CODTAB -> BD4 (vigencia mais recente)

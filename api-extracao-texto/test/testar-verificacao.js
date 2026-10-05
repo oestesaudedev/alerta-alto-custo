@@ -30,9 +30,9 @@ const IA = {
   ok: true,
   modelo: 'teste',
   achados: [
-    { codigo: '001', termo: 'Remicade', confianca: 'media', motivo: 'nome comercial' },
-    { codigo: '004', termo: 'Mabthera', confianca: 'alta', motivo: 'nome comercial de rituximabe' },
-    { codigo: '003', termo: 'A.A.S', confianca: 'baixa', motivo: 'abreviacao duvidosa' },
+    { codigo: '001', termo: 'Remicade', contexto: 'solicitado', confianca: 'media', motivo: 'nome comercial' },
+    { codigo: '004', termo: 'Mabthera', contexto: 'solicitado', confianca: 'alta', motivo: 'nome comercial de rituximabe' },
+    { codigo: '003', termo: 'A.A.S', contexto: 'solicitado', confianca: 'baixa', motivo: 'abreviacao duvidosa' },
   ],
 };
 const ACHADOS = [

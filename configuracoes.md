@@ -2,7 +2,7 @@
 
 Este guia lista tudo o que precisa ser configurado para a solução funcionar, e onde cada item fica. São três lugares:
 
-1. `.env` **da API** (`api-extracao-texto/.env`): token da API, credenciais do SFTP, se a IA está ligada (`IA_HABILITADA`) e, com ela ligada, a chave da Anthropic.
+1. `.env` **da API** (`api-extracao-texto/.env`): token da API, credenciais do SFTP, se a IA está ligada (`IA_HABILITADA`) e, com ela ligada, a chave da Anthropic, e o critério dos medicamentos (`MEDICAMENTO_CRITERIO` / `MEDICAMENTO_VALOR_MIN`).
 2. **Protheus**: parâmetros SX6, constantes do fonte `OS_MEDALTC.tlpp` e o Scheduler.
 3. **Rede**: portas que precisam estar liberadas entre as máquinas.
 
@@ -47,6 +47,8 @@ Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 | `IA_MODELO`          | Não                | `claude-sonnet-5-5`                           | Modelo do Claude. `claude-haiku-4-5` é mais barato e mais rápido, com menos precisão em nomes comerciais e erros de OCR           |
 | `IA_TIMEOUT_MS`      | Não                | `60000`                                       | Tempo máximo da chamada ao Claude (com 1 nova tentativa em 429/5xx dentro desse tempo). Somado ao OCR, precisa caber no `__API_TIMEOUT` (300 s) do job |
 | `IA_MAX_CHARS`       | Não                | `100000`                                      | Máximo de caracteres do texto do anexo enviados ao Claude. O resto não é lido: a API registra `WARN` e devolve o aviso `texto-cortado`, que o job registra no log |
+| `MEDICAMENTO_CRITERIO` | Não              | `altcus` / `valor`                            | Quais itens da BR8 (`BR8_CODPAD` em `__CODPAD_BR8`) entram na lista de medicamentos, lida pelo job no `GET /config` a cada execução. `altcus` (padrão): `BR8_ALTCUS = '1'`. `valor`: valor de tabela BD4 vigente maior que `MEDICAMENTO_VALOR_MIN` em alguma tabela/unidade (seção 2.5). Outro valor impede a subida |
+| `MEDICAMENTO_VALOR_MIN` | Com `valor`     | `1500.00`                                     | Valor mínimo em reais (ponto decimal), exclusivo: entra o item com `BD4_VALREF` **maior** que ele. A API não sobe com `MEDICAMENTO_CRITERIO=valor` e este vazio ou ≤ 0. Com a IA ligada, a lista não pode passar de 5000 itens: acima disso o job para sem avançar o `Z_NOTIENCA` e pede um valor maior |
 
 As impressões digitais do SFTP (`SFTP_*_HOSTKEY`) são obrigatórias para o perfil cujo `HOST` estiver preenchido. Para conferir ou atualizar (se a TOTVS trocar a chave do servidor, a API passa a responder "chave do servidor SFTP ... não confere" e o job para até o `.env` ser corrigido):
 
@@ -147,7 +149,8 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 | `__CFG_PATH`    | `/config`                        | Caminho do `GET` que informa se a IA está ligada na API (mesma URL base do `__API_URL`)                                                                                                                                                                     |
 | `__TIP_BE2` / `__TIP_BQV` | `{1, 2, 3, 4, 5, 7}` / `11` | `B53_TIPO` cujos itens ficam na BE2; `11` com `B71_ALIMOV = B4Q` usa a BQV; os demais, a B4C (seção 2.5)                                                                                                                                           |
 | `__NUMGUI_PT`   | `{4, 4, 2, 8}`                   | Partes do `B53_NUMGUI` (OPEMOV + ANOAUT + MESAUT + NUMAUT) usadas como chave dos itens da guia                                                                                                                                                              |
-| `__CODPAD_BR8`  | `{"00", "20"}`                   | Tabelas padrão (`BR8_CODPAD`) consideradas no alto custo: lista de medicamentos (BR8/BA8/BD4) e procedimentos da guia. Item com `BR8_ALTCUS = '1'` em outro CODPAD vai só para o log, como ignorado                                                        |
+| `__CODPAD_BR8`  | `{"00", "20", "18"}`             | Tabelas padrão (`BR8_CODPAD`) consideradas no alto custo: lista de medicamentos (BR8/BA8/BD4) e procedimentos da guia. Item com `BR8_ALTCUS = '1'` em outro CODPAD vai só para o log, como ignorado                                                        |
+| `__TAB_ALIAS` / `__TAB_CPOS` | `"BF8"` / `{"BF8_CODINT", "BF8_CODIGO", "BF8_DESCM", "BF8_CODPAD"}` | Cadastro das tabelas de preço (`BD4_CODTAB` = CODINT + CODIGO), de onde vêm a descrição e o Tp.Pad.Saude de cada linha do "Valor de tabela" no e-mail. Ordem dos campos: CODINT, CODIGO, descrição, CODPAD. Sem a tabela ou um campo no dicionário, o job registra `WARN` e o e-mail sai só com o código. Conferir com `levantamento/05-campos-valor.sql` (consulta 7) |
 
 
 
@@ -182,7 +185,7 @@ O job envia pelo SMTP padrão do Protheus, lendo os parâmetros SX6 abaixo (os m
 | `MV_RELFROM` | C    | `protheus@empresa.com.br` | Remetente. Vazio: usa `MV_RELACNT`                                |
 
 
-O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum item de alto custo foi encontrado. A coluna "Detecção" diz de onde veio o item (Procedimento, Procedimento + IA ou Anexo (IA)); "Qtd" e "Valor na guia" vêm dos itens da guia. Com a IA ligada, a coluna "Observação IA" traz a confirmação, a confiança e o motivo dados pelo Claude (ex.: "confirmado pela IA: IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
+O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum item de alto custo foi encontrado. A coluna "Detecção" diz de onde veio o item (Procedimento, Procedimento + IA ou Anexo (IA)); "Qtd" e "Valor na guia" vêm dos itens da guia. "Valor de tabela" é uma mini-tabela com uma linha por tabela de preço e unidade vigentes (Valor = `BD4_VALREF`, Tabela = `BD4_CODTAB`, Descrição e Tp.Pad do cadastro `__TAB_ALIAS`, Unid. = `BD4_CODIGO`, Vigência = "Vigente (sem fim)", "Vigente até ..." ou "Encerrada em ..." pelo `BD4_VIGFIM`, com a linha encerrada em cinza; a vigência é só informativa, a escolha da linha continua pelo maior `BD4_VIGINI` ≤ hoje); sem preço sai `sem valor na tabela`, e sem os campos da BD4 sai `n/d`. Com a IA ligada, a coluna "Observação IA" traz a confirmação, a confiança e o motivo dados pelo Claude (ex.: "confirmado pela IA: IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
 
 ### 2.5 Procedimentos da guia (camada antes da IA)
 
@@ -195,7 +198,10 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 | demais | `B4C` (`B4A`) | `B4C_OPEMOV + B4C_ANOAUT + B4C_MESAUT + B4C_NUMAUT` | `B4C_QTDSOL` / `B4C_VLRUNT` |
 
 - **B71 da BEA** (`B71_ALIMOV = BEA`): o job lê a chave `BEA_OPEMOV + BEA_ANOAUT + BEA_MESAUT + BEA_NUMAUT` no registro apontado pelo `B71_RECMOV`. Nos itens da BE2, essa chave substitui o `B53_NUMGUI`; e, se o `BEA_GUIORI` estiver vazio, ela também é usada como número da guia para achar a B53 e os anexos (antes a B71 era concluída sem verificação). O log indica `chave da BEA recno ...` ou `pela chave da BEA`.
-- Um item é de alto custo quando o `CODPAD + CODPRO` dele tem `BR8_ALTCUS = '1'` na BR8 e o `CODPAD` é `00` ou `20` (`__CODPAD_BR8`). Com `BR8_ALTCUS = '1'` em outro CODPAD, o log mostra `alto custo na BR8, CODPAD fora de 00/20 (ignorado)` e o item não entra no e-mail.
+- Um item é de alto custo quando o `CODPAD + CODPRO` dele está na lista de medicamentos carregada no início da execução (`fCarregaMed`), com o `CODPAD` em `__CODPAD_BR8`. A lista segue o `MEDICAMENTO_CRITERIO` do `.env` da API:
+  - `altcus` (padrão): `BR8_ALTCUS = '1'`. Com `BR8_ALTCUS = '1'` em outro CODPAD, o log mostra `alto custo na BR8, CODPAD fora de ... (ignorado)` e o item não entra no e-mail.
+  - `valor`: alguma tabela/unidade da BD4 (via `BA8_CODTAB`) na vigência mais recente até hoje tem `BD4_VALREF > MEDICAMENTO_VALOR_MIN`. Item sem BA8 ou sem BD4 vigente fica de fora. O log marca `ALTO CUSTO (valor de tabela BD4 > R$ ...)`.
+  - A lista é montada uma vez por execução e consultada por um índice em memória; a consulta dos itens da guia não muda nem acrescenta JOIN com a BD4. Para calibrar o valor, use a contagem em `levantamento/05-campos-valor.sql`.
 - Valor na guia = soma de quantidade solicitada × valor unitário dos itens com o mesmo código (quantidade zerada conta como 1).
 - O alias vem da própria B71 (`B71_ALIMOV`, a tabela origem da movimentação), não da B53. Sem o `B53_TIPO` no dicionário, o job registra `CAMPO_B53_INEXISTENTE` e não avança o `Z_NOTIENCA`. Confira com `levantamento/07-b53-tipgui-itens.sql`.
 - Guia sem B53: nada a verificar, a B71 é concluída. Tabela ou campo de itens ausente no dicionário: `ERROR` no log e a B71 segue sem procedimentos. Erro na consulta dos itens: falha temporária (não avança).

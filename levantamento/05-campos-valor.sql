@@ -11,7 +11,9 @@ SELECT X3_ARQUIVO, X3_CAMPO, X3_TIPO, X3_TAMANHO, X3_TITULO, X3_DESCRIC
 FROM SX3010
 WHERE D_E_L_E_T_ = ' '
   AND X3_CAMPO IN ('BA8_CODTAB', 'BD4_CODTAB', 'BD4_CDPADP', 'BD4_CODPRO',
-                   'BD4_CODIGO', 'BD4_VALREF', 'BD4_VIGINI')
+                   'BD4_CODIGO', 'BD4_VALREF', 'BD4_VIGINI',
+                   -- cadastro das tabelas de preco (__TAB_ALIAS / __TAB_CPOS): descricao e Tp.Pad.Saude no e-mail
+                   'BF8_CODINT', 'BF8_CODIGO', 'BF8_DESCM', 'BF8_CODPAD')
 ORDER BY X3_ARQUIVO, X3_ORDEM;
 
 -- 2) Valor na guia: chave da origem e da tabela de itens
@@ -54,4 +56,54 @@ WHERE BR8.D_E_L_E_T_ = ' '
   AND BR8.BR8_CODPSA = '«codigo»'
 ORDER BY BD4.BD4_CODTAB, BD4.BD4_CODIGO, BD4.BD4_VIGINI;
 
--- Oracle/Postgres: trocar '%[_]XXX' por '%\_XXX' ESCAPE '\'.
+-- 5) Indices da BD4: a vigencia (fSqlBd4Vig) precisa de um que comece por
+--    BD4_FILIAL+BD4_CODTAB+BD4_CDPADP+BD4_CODPRO+BD4_CODIGO(+VIGINI). Trocar SIX010 pelo SIX da empresa.
+SELECT INDICE, ORDEM, CHAVE, DESCRICAO
+FROM SIX010
+WHERE D_E_L_E_T_ = ' '
+  AND INDICE IN ('BD4', 'BA8')
+ORDER BY INDICE, ORDEM;
+
+-- 6) MEDICAMENTO_CRITERIO=valor: quantos itens entram na lista para o MEDICAMENTO_VALOR_MIN (trocar @VLRMIN).
+--    Mesmo filtro de fSqlFiltroBr8; com a IA ligada precisa ficar em ate 5000.
+DECLARE @VLRMIN NUMERIC(16, 2) = 1500.00;
+DECLARE @HOJE CHAR(8) = CONVERT(CHAR(8), GETDATE(), 112);
+SELECT COUNT(DISTINCT BR8.BR8_CODPSA) AS QTD_MEDICAMENTOS
+FROM BR8010 BR8
+WHERE BR8.D_E_L_E_T_ = ' '
+  AND BR8.BR8_CODPAD IN ('00', '20', '18')
+  AND EXISTS (SELECT 1 FROM BA8010 BA8V
+              INNER JOIN BD4010 BD4V
+                  ON BD4V.BD4_CODTAB = BA8V.BA8_CODTAB
+                 AND BD4V.BD4_CDPADP = BA8V.BA8_CDPADP
+                 AND BD4V.BD4_CODPRO = BA8V.BA8_CODPRO
+                 AND BD4V.BD4_VALREF > @VLRMIN
+                 AND BD4V.BD4_VIGINI <= @HOJE
+                 AND BD4V.D_E_L_E_T_ = ' '
+                 AND NOT EXISTS (SELECT 1 FROM BD4010 BD4N
+                                 WHERE BD4N.BD4_FILIAL = BD4V.BD4_FILIAL
+                                   AND BD4N.BD4_CODTAB = BD4V.BD4_CODTAB
+                                   AND BD4N.BD4_CDPADP = BD4V.BD4_CDPADP
+                                   AND BD4N.BD4_CODPRO = BD4V.BD4_CODPRO
+                                   AND BD4N.BD4_CODIGO = BD4V.BD4_CODIGO
+                                   AND BD4N.BD4_VIGINI > BD4V.BD4_VIGINI
+                                   AND BD4N.BD4_VIGINI <= @HOJE
+                                   AND BD4N.D_E_L_E_T_ = ' ')
+              WHERE BA8V.BA8_CDPADP = BR8.BR8_CODPAD
+                AND BA8V.BA8_CODPRO = BR8.BR8_CODPSA
+                AND BA8V.D_E_L_E_T_ = ' ');
+
+-- 7) Cadastro das tabelas de preco (__TAB_ALIAS = BF8): BD4_CODTAB = BF8_CODINT + BF8_CODIGO.
+--    Esperado para 0001017: "BRASINDICE MEDICAMENTOS RESTRITO PF", Tp.Pad.Saude 20.
+--    Se nao for a BF8, achar a tabela pela tela (X3_TITULO 'Tp.Pad.Sa%') e ajustar __TAB_ALIAS/__TAB_CPOS.
+SELECT BF8_CODINT, BF8_CODIGO, BF8_DESCM, BF8_CODPAD
+FROM BF8010
+WHERE BF8_CODINT + BF8_CODIGO = '0001017'
+  AND D_E_L_E_T_ = ' ';
+
+SELECT X3_ARQUIVO, X3_CAMPO, X3_TITULO
+FROM SX3010
+WHERE D_E_L_E_T_ = ' '
+  AND X3_TITULO LIKE 'Tp.Pad.Sa%';
+
+-- Oracle/Postgres: trocar '%[_]XXX' por '%\_XXX' ESCAPE '\' e, na consulta 6, as variaveis por literais.

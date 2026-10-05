@@ -17,7 +17,7 @@
 #DEFINE __URL_DEV    "https://easily-honest-pamula.ngrok-free.dev"
 #DEFINE __API_PATH   "/verificar-sftp"
 #DEFINE __API_URL    fApiUrl()
-// GET que informa se a IA esta ligada no .env da API (IA_HABILITADA)
+// GET que informa se a IA esta ligada (IA_HABILITADA) e o criterio dos medicamentos (MEDICAMENTO_*) no .env da API
 #DEFINE __CFG_PATH   "/config"
 #DEFINE __API_TOKEN  SuperGetMV("Z_MEDAPIT", .F., "")
 
@@ -113,7 +113,16 @@
 #DEFINE __MIN_TERMO  4
 
 // Tabelas padrao (BR8_CODPAD) consideradas no alto custo
-#DEFINE __CODPAD_BR8 {"00", "20", "18"}
+#DEFINE __CODPAD_BR8 {"00", "20"}
+
+// Criterio da lista de medicamentos (MEDICAMENTO_CRITERIO no .env da API, lido pelo GET __CFG_PATH):
+// __CRIT_ALT = BR8_ALTCUS = '1'; __CRIT_VLR = valor de tabela BD4 vigente > MEDICAMENTO_VALOR_MIN.
+// __CRIT_PAD vale quando a API (versao anterior) nao informa o criterio
+#DEFINE __CRIT_ALT   "ALTCUS"
+#DEFINE __CRIT_VLR   "VALOR"
+#DEFINE __CRIT_PAD   __CRIT_ALT
+// Maximo de medicamentos aceito pela API na lista (ArrayMaxSize do VerificarBaseDto)
+#DEFINE __MAX_MED    5000
 
 // Posicoes de cada item de alto custo do alerta (fProcAltoCusto, fBuscaMed, fMescla)
 #DEFINE __F_CODPSA   1
@@ -142,6 +151,19 @@
 #DEFINE __M_CODPAD   4
 #DEFINE __M_VLRTAB   5
 
+// Cadastro das tabelas de preco (BD4_CODTAB = CODINT + CODIGO): descricao e Tp.Pad.Saude no e-mail.
+// Sem a tabela/campos no dicionario, o e-mail sai so com o codigo. Ordem: CODINT, CODIGO, descricao, CODPAD
+#DEFINE __TAB_ALIAS  "BF8"
+#DEFINE __TAB_CPOS   {"BF8_CODINT", "BF8_CODIGO", "BF8_DESCM", "BF8_CODPAD"}
+
+// Posicoes de cada linha do valor de tabela (__M_VLRTAB / __F_VLRTAB quando array; texto = __VLR_ND ou sem valor)
+#DEFINE __L_VALOR    1
+#DEFINE __L_CODTAB   2
+#DEFINE __L_DESCRI   3
+#DEFINE __L_CODPAD   4
+#DEFINE __L_UNID     5
+#DEFINE __L_VIGFIM   6
+
 // Texto mostrado no e-mail quando a tabela/campo de valor nao existe no dicionario
 #DEFINE __VLR_ND     "n/d"
 
@@ -163,7 +185,9 @@ Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP em __CODDEP; {} = tod
      (B71 da BEA com BEA_GUIORI vazio: guia = chave da propria BEA, OPEMOV + ANOAUT + MESAUT + NUMAUT)
   -> 1. procedimentos lancados na guia, pela chave do B53_NUMGUI (fCfgProc; BE2 de B71 da BEA: chave da BEA):
         B53_TIPO 1, 2, 3, 4, 5, 7 -> BE2; 11 com B71_ALIMOV = B4Q -> BQV; demais -> B4C
-        item com BR8_ALTCUS = '1' no CODPAD + CODPRO (CODPAD em __CODPAD_BR8) e procedimento de alto custo
+        item cujo CODPAD + CODPRO esta na lista de medicamentos (fCarregaMed) e procedimento de alto custo.
+        A lista segue o criterio do GET __CFG_PATH (MEDICAMENTO_CRITERIO no .env da API), com CODPAD em
+        __CODPAD_BR8: ALTCUS = BR8_ALTCUS = '1'; VALOR = valor de tabela BD4 vigente > MEDICAMENTO_VALOR_MIN
   -> 2. so com a IA ligada (IA_HABILITADA no .env da API, lido por GET __CFG_PATH a cada execucao):
         AC9 -> ACB -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 e os nomes da guia a
         mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da lista
@@ -400,11 +424,14 @@ Static Function fDiagnostico(cArquivo)
 	Local aAchados := {}
 	Local aMedApi  := {}
 	Local oServer  := Nil
+	Local oCrit    := Nil
 	Local lCfg     := .F.
 	Local lIa      := .F.
 	Local lProcOk  := .T.
+	Local lTab     := .F.
 	Local cModelo  := ""
 	Local cErro    := ""
+	Local cFalta   := ""
 	Local nI       := 0
 
 	lOk := fChk("Token Z_MEDAPIT", fValidaCfg(), "") .And. lOk
@@ -412,17 +439,22 @@ Static Function fDiagnostico(cArquivo)
 	nUltimo := fLeWatermark()
 	lOk := fChk("Watermark " + __PAR_WATER, nUltimo >= 0, cValToChar(nUltimo)) .And. lOk
 
-	lCfg := fIaHabilitada(@lIa, @cModelo, @cErro)
-	lOk := fChk("Flag da IA (GET " + fApiBase() + __CFG_PATH + ")", lCfg,;
+	lCfg := fConfigApi(@lIa, @cModelo, @oCrit, @cErro)
+	lOk := fChk("Flag da IA e criterio (GET " + fApiBase() + __CFG_PATH + ")", lCfg,;
 		IIf(!lCfg, cErro, IIf(lIa, "IA habilitada (" + cModelo + "): procedimentos + confirmacao nos anexos",;
-			"IA desabilitada: alerta so pelos procedimentos da guia"))) .And. lOk
+			"IA desabilitada: alerta so pelos procedimentos da guia") + "; criterio " + fCritTxt(oCrit))) .And. lOk
 
-	aMed := fCarregaMed()
-	lOk := fChk("Medicamentos de alto custo (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
+	aMed := fCarregaMed(oCrit)
+	lOk := fChk("Medicamentos de alto custo (" + fCritTxt(oCrit) + ", BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
+	lOk := fChk("Lista de medicamentos para a API (ate " + cValToChar(__MAX_MED) + ")", Len(aMed) <= __MAX_MED,;
+		IIf(Len(aMed) <= __MAX_MED, "", "aumente o MEDICAMENTO_VALOR_MIN no .env da API")) .And. lOk
 	For nI := 1 To Min(Len(aMed), 5)
 		fLog("INFO", "  " + aMed[nI][__M_CODPSA] + " " + aMed[nI][__M_DESCRI] + " | " + cValToChar(Len(aMed[nI][__M_TERMOS])) +;
-			" termo(s) | valor de tabela: " + aMed[nI][__M_VLRTAB])
+			" termo(s) | valor de tabela: " + fVlrTabTxt(aMed[nI][__M_VLRTAB]))
 	Next nI
+	lTab := fCamposOk(__TAB_ALIAS, __TAB_CPOS, @cFalta)
+	fLog(IIf(lTab, "INFO", "WARN"), "  Descricao das tabelas de preco (" + __TAB_ALIAS + "): " +;
+		IIf(lTab, "campos " + fListaCpo(__TAB_CPOS) + " no dicionario", cFalta + " nao existe no dicionario; e-mail so com o codigo"))
 
 	If nUltimo >= 0
 		aB71 := fConsulta(nUltimo)
@@ -432,7 +464,7 @@ Static Function fDiagnostico(cArquivo)
 				nCampo++
 			EndIf
 			If aB71[nI][__I_STATUS] == __ST_OK .Or. aB71[nI][__I_STATUS] == __ST_SEMANEXO
-				fProcAltoCusto(aB71[nI], aMed, @lProcOk)
+				fProcAltoCusto(aB71[nI], aMed, oCrit, @lProcOk)
 				If !lProcOk
 					nCampo++
 				EndIf
@@ -506,6 +538,7 @@ Static Function fProcessa(aRes, cData)
 	Local aMedApi  := {}
 	Local aB71     := {}
 	Local nEmails  := 0
+	Local oCrit    := Nil
 	Local lIa      := .F.
 	Local cModelo  := ""
 	Local cErro    := ""
@@ -524,17 +557,23 @@ Static Function fProcessa(aRes, cData)
 	aRes[__P_INICIO] := nUltimo
 	aRes[__P_FINAL]  := nUltimo
 
-	If !fIaHabilitada(@lIa, @cModelo, @cErro)
-		fLog("ERROR", "GET " + __CFG_PATH + " (flag da IA): " + cErro + ". Encerrando sem avancar " + __PAR_WATER + ".")
+	If !fConfigApi(@lIa, @cModelo, @oCrit, @cErro)
+		fLog("ERROR", "GET " + __CFG_PATH + " (flag da IA e criterio): " + cErro + ". Encerrando sem avancar " + __PAR_WATER + ".")
 		Return
 	EndIf
 	fLog("INFO", IIf(lIa, "IA habilitada (" + cModelo + "): procedimentos da guia + confirmacao nos anexos",;
 		"IA desabilitada (IA_HABILITADA na API): alerta so pelos procedimentos da guia, anexos nao sao enviados"))
 
-	aMed := fCarregaMed()
-	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (BR8_ALTCUS = '1', BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)")
+	aMed := fCarregaMed(oCrit)
+	fLog("INFO", cValToChar(Len(aMed)) + " medicamento(s) de alto custo carregado(s) (" + fCritTxt(oCrit) + ", BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)")
 	If Len(aMed) == 0
 		fLog("WARN", "Nenhum medicamento de alto custo na BR8/BA8; nada a comparar. Encerrando sem avancar " + __PAR_WATER + ".")
+		Return
+	EndIf
+
+	If lIa .And. Len(aMed) > __MAX_MED
+		fLog("ERROR", cValToChar(Len(aMed)) + " medicamentos passam do limite da API (" + cValToChar(__MAX_MED) +;
+			"): aumente o MEDICAMENTO_VALOR_MIN no .env da API. Encerrando sem avancar " + __PAR_WATER + ".")
 		Return
 	EndIf
 
@@ -558,7 +597,7 @@ Static Function fProcessa(aRes, cData)
 	nGravado := nUltimo
 	For nI := 1 To Len(aB71)
 		fLogB71(aB71[nI])
-		If !fVerificaB71(aB71[nI], aMed, @nEmails, aMedApi, lIa)
+		If !fVerificaB71(aB71[nI], aMed, oCrit, @nEmails, aMedApi, lIa)
 			fLog("WARN", "B71 " + cValToChar(aB71[nI][__I_RECNO]) + " nao concluida; ela e as seguintes" +;
 				" serao retomadas na proxima execucao. " + __PAR_WATER + " permanece em " + cValToChar(nGravado) + ".")
 			Exit
@@ -581,12 +620,13 @@ dos anexos na API e mescla dos dois resultados; se houver algum item, envia o e-
 @type function
 @param aItem, array, item devolvido por fConsulta()
 @param aMed, array, medicamentos devolvidos por fCarregaMed()
+@param oCrit, object, criterio da lista (fConfigApi), com o indice montado por fCarregaMed()
 @param nEmails, numeric, contador de e-mails enviados (por referencia)
 @param aMedApi, array, lista de medicamentos enviada a API (fMedApi); vazia com a IA desligada
-@param lIa, logical, IA ligada na API (fIaHabilitada)
+@param lIa, logical, IA ligada na API (fConfigApi)
 @return logical, .T. se a B71 pode ser dada como verificada (avancar Z_NOTIENCA)
 /*/
-Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
+Static Function fVerificaB71(aItem, aMed, oCrit, nEmails, aMedApi, lIa)
 
 	Local aProc    := {}
 	Local aIa      := {}
@@ -604,7 +644,7 @@ Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
 		Return .T.
 	EndIf
 
-	aProc := fProcAltoCusto(aItem, aMed, @lOk)
+	aProc := fProcAltoCusto(aItem, aMed, oCrit, @lOk)
 	If !lOk
 		Return .F.
 	EndIf
@@ -630,7 +670,7 @@ Static Function fVerificaB71(aItem, aMed, nEmails, aMedApi, lIa)
 	Next nI
 	fLog("INFO", "  " + cValToChar(Len(aAchados)) + " item(ns) de alto custo: " + cLista)
 
-	If !fEnviaEmail(aItem, aAchados, lIa)
+	If !fEnviaEmail(aItem, aAchados, lIa, oCrit)
 		Return .F.
 	EndIf
 	nEmails++
@@ -792,9 +832,10 @@ Envia o alerta da B71 para __MAIL_TO pelo SMTP configurado no Protheus
 (MV_RELSERV, MV_RELACNT, MV_RELPSW, MV_RELAUTH, MV_RELSSL, MV_RELTLS, MV_RELFROM).
 @type function
 @param lIa, logical, IA ligada (inclui as colunas dos anexos)
+@param oCrit, object, criterio da lista (fConfigApi)
 @return logical, .T. se o e-mail foi aceito pelo servidor SMTP
 /*/
-Static Function fEnviaEmail(aItem, aAchados, lIa)
+Static Function fEnviaEmail(aItem, aAchados, lIa, oCrit)
 
 	Local cFrom   := AllTrim(SuperGetMV("MV_RELFROM", .F., ""))
 	Local oServer := Nil
@@ -814,7 +855,7 @@ Static Function fEnviaEmail(aItem, aAchados, lIa)
 	oMsg:cFrom    := cFrom
 	oMsg:cTo      := __MAIL_TO
 	oMsg:cSubject := fAssunto(aItem, aAchados)
-	oMsg:cBody    := fCorpoEmail(aItem, aAchados, lIa)
+	oMsg:cBody    := fCorpoEmail(aItem, aAchados, lIa, oCrit)
 
 	nErro := oMsg:Send(oServer)
 	oServer:SMTPDisconnect()
@@ -896,9 +937,10 @@ Return "[Alto custo] Guia " + aItem[__I_NUMGUI] + " - " + cValToChar(Len(aCodigo
 Monta o corpo HTML do alerta. Nao inclui trechos do texto dos anexos (dados de saude).
 @type function
 @param lIa, logical, IA ligada: inclui termo, anexo e observacao da IA
+@param oCrit, object, criterio da lista (fConfigApi), descrito no rodape
 @return character, HTML
 /*/
-Static Function fCorpoEmail(aItem, aAchados, lIa)
+Static Function fCorpoEmail(aItem, aAchados, lIa, oCrit)
 
 	Local cHtml := ""
 	Local nI    := 0
@@ -925,7 +967,7 @@ Static Function fCorpoEmail(aItem, aAchados, lIa)
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_DESCRI]) + "</td>"
 		cHtml += "<td>" + fHtml(aAchados[nI][__F_ORIGEM]) + "</td>"
 		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_QTD]) + "</td>"
-		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_VLRTAB]) + "</td>"
+		cHtml += "<td>" + fVlrTabHtml(aAchados[nI][__F_VLRTAB]) + "</td>"
 		cHtml += '<td style="text-align:right">' + fHtml(aAchados[nI][__F_VLRGUI]) + "</td>"
 		If lIa
 			cHtml += "<td>" + fHtml(aAchados[nI][__F_TERMO]) + "</td>"
@@ -935,9 +977,11 @@ Static Function fCorpoEmail(aItem, aAchados, lIa)
 		cHtml += "</tr>"
 	Next nI
 	cHtml += "</table>"
-	cHtml += '<p style="font-size:11px;color:#555">Procedimento: item lan&ccedil;ado na guia com BR8_ALTCUS = 1 (tabela ' + fCodPadTxt() + ').' +;
+	cHtml += '<p style="font-size:11px;color:#555">Procedimento: item lan&ccedil;ado na guia com ' + fHtml(fCritTxt(oCrit)) + ' (tabela ' + fCodPadTxt() + ').' +;
 		" Qtd e valor na guia: soma de quantidade solicitada x valor unit&aacute;rio dos itens da guia com o mesmo c&oacute;digo." +;
-		" Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; " + DToC(Date()) + ". &quot;" + __VLR_ND +;
+		" Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; " + DToC(Date()) + "," +;
+		" uma linha por tabela de pre&ccedil;o (" + __TAB_ALIAS + ") e unidade." +;
+		" Vig&ecirc;ncia: pelo BD4_VIGFIM (encerrada = fim antes de hoje, em cinza; o valor continua listado). &quot;" + __VLR_ND +;
 		"&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
 	If lIa
 		cHtml += '<p style="font-size:11px;color:#555">Anexo (IA): medicamento citado no anexo e n&atilde;o lan&ccedil;ado na guia' +;
@@ -956,6 +1000,88 @@ Return cHtml
 /*/
 Static Function fHtml(cTexto)
 Return StrTran(StrTran(StrTran(cValToChar(cTexto), "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+
+/*/{Protheus.doc} fVlrTabHtml
+Celula "Valor de tabela" do e-mail: mini-tabela com uma linha por tabela de preco + unidade.
+@type function
+@param xVlr, array|character, __F_VLRTAB: linhas __L_* (fCarregaVlrTab) ou texto (__VLR_ND, sem valor)
+@return character, HTML
+/*/
+Static Function fVlrTabHtml(xVlr)
+
+	Local cHtml := ""
+	Local aLin  := {}
+	Local nI    := 0
+
+	If ValType(xVlr) != "A"
+		Return fHtml(xVlr)
+	EndIf
+
+	cHtml := '<table border="1" cellpadding="2" cellspacing="0" style="border-collapse:collapse;font-size:11px">' +;
+		"<tr><th>Valor</th><th>Tabela</th><th>Descri&ccedil;&atilde;o</th><th>Tp.Pad</th><th>Unid.</th><th>Vig&ecirc;ncia</th></tr>"
+	For nI := 1 To Len(xVlr)
+		aLin := xVlr[nI]
+		// Linha com vigencia encerrada em cinza
+		cHtml += IIf(fVigEncerr(aLin[__L_VIGFIM]), '<tr style="color:#999">', "<tr>") +;
+			'<td style="text-align:right;white-space:nowrap">' + fHtml(fMoeda(aLin[__L_VALOR])) + "</td>" +;
+			"<td>" + fHtml(aLin[__L_CODTAB]) + "</td>" +;
+			"<td>" + fHtml(aLin[__L_DESCRI]) + "</td>" +;
+			"<td>" + fHtml(aLin[__L_CODPAD]) + "</td>" +;
+			"<td>" + fHtml(aLin[__L_UNID]) + "</td>" +;
+			'<td style="white-space:nowrap">' + StrTran(fHtml(fVigTxt(aLin[__L_VIGFIM])), " ate ", " at&eacute; ") + "</td></tr>"
+	Next nI
+	cHtml += "</table>"
+
+Return cHtml
+
+/*/{Protheus.doc} fVlrTabTxt
+@type function
+@param xVlr, array|character, __M_VLRTAB / __F_VLRTAB (linhas __L_* ou texto)
+@return character, valor de tabela em uma linha, para o log: "R$ 700,51 (0001020 DESCRICAO VMD) / ..."
+/*/
+Static Function fVlrTabTxt(xVlr)
+
+	Local cRet := ""
+	Local aLin := {}
+	Local nI   := 0
+
+	If ValType(xVlr) != "A"
+		Return cValToChar(xVlr)
+	EndIf
+
+	For nI := 1 To Len(xVlr)
+		aLin := xVlr[nI]
+		cRet += IIf(nI > 1, " / ", "") + fMoeda(aLin[__L_VALOR]) + " (" + aLin[__L_CODTAB] +;
+			IIf(Empty(aLin[__L_DESCRI]), "", " " + aLin[__L_DESCRI]) + " " + aLin[__L_UNID] +;
+			IIf(fVigEncerr(aLin[__L_VIGFIM]), " ENCERRADA " + DToC(SToD(aLin[__L_VIGFIM])), "") + ")"
+	Next nI
+
+Return cRet
+
+/*/{Protheus.doc} fVigEncerr
+@type function
+@param cVigFim, character, BD4_VIGFIM (AAAAMMDD) ou vazio
+@return logical, .T. se a vigencia terminou antes de hoje (mesma data de hoje de fSqlBd4Vig)
+/*/
+Static Function fVigEncerr(cVigFim)
+Return !Empty(cVigFim) .And. cVigFim < DToS(Date())
+
+/*/{Protheus.doc} fVigTxt
+@type function
+@param cVigFim, character, BD4_VIGFIM (AAAAMMDD) ou vazio
+@return character, coluna Vigencia do e-mail: "Vigente (sem fim)", "Vigente ate DD/MM/AAAA" ou
+	"Encerrada em DD/MM/AAAA"
+/*/
+Static Function fVigTxt(cVigFim)
+
+	Do Case
+	Case Empty(cVigFim)
+		Return "Vigente (sem fim)"
+	Case fVigEncerr(cVigFim)
+		Return "Encerrada em " + DToC(SToD(cVigFim))
+	EndCase
+
+Return "Vigente ate " + DToC(SToD(cVigFim))
 
 /*/{Protheus.doc} fMvLogico
 @type function
@@ -1206,20 +1332,36 @@ Static Function fDecUtf8(xTexto)
 Return IIf(ValType(xDec) == "C", xDec, cTexto)
 
 /*/{Protheus.doc} fCarregaMed
-Carrega os medicamentos de alto custo: BR8 LEFT JOIN BA8, BR8_ALTCUS = '1' e BR8_CODPAD em __CODPAD_BR8.
-Itens so na BR8, sem BA8, entram so com o termo da BR8_DESCRI (e ficam sem valor de tabela).
+Carrega os medicamentos de alto custo: BR8 LEFT JOIN BA8, BR8_CODPAD em __CODPAD_BR8 e o filtro do
+criterio (fSqlFiltroBr8): BR8_ALTCUS = '1' ou valor de tabela BD4 vigente > valor minimo.
+Itens so na BR8, sem BA8, entram so com o termo da BR8_DESCRI (e ficam sem valor de tabela); no criterio
+VALOR eles nao entram (sem BA8 nao ha BD4).
+Monta tambem oCrit["idx"]: CODPAD + "|" + CODPSA -> posicao em aMed, consultado por fProcAltoCusto() sem
+nova query nem aScan por item da guia.
 @type function
+@param oCrit, object, criterio da lista (fConfigApi); recebe oCrit["idx"]
 @return array, { {cCodPsa, cDescri, aTermos, cCodPad, cVlrTab}, ... }. aTermos tem as descricoes
 	normalizadas (BR8_DESCRI, BA8_DESCRI, BA8_DPRINC), sem repeticao. cVlrTab vem de fCarregaVlrTab().
 /*/
-Static Function fCarregaMed()
+Static Function fCarregaMed(oCrit)
 
-	Local aMed   := {}
-	Local cQuery := ""
-	Local cAlias := ""
-	Local cCod   := ""
-	Local oErro  := Nil
-	Local nPos   := 0
+	Local aMed    := {}
+	Local oIdx    := JsonObject():New()
+	Local cFiltro := ""
+	Local cFalta  := ""
+	Local cQuery  := ""
+	Local cAlias  := ""
+	Local cCod    := ""
+	Local oErro   := Nil
+	Local nPos    := 0
+
+	oCrit["idx"] := oIdx
+
+	If oCrit["criterio"] == __CRIT_VLR .And. !fCamposValorOk(@cFalta)
+		fLog("ERROR", "Criterio " + __CRIT_VLR + " indisponivel: " + cFalta + " nao existe no dicionario")
+		Return aMed
+	EndIf
+	cFiltro := fSqlFiltroBr8(oCrit)
 
 	cQuery := "SELECT DISTINCT BR8.BR8_CODPAD, BR8.BR8_CODPSA, BR8.BR8_DESCRI," +;
 		" COALESCE(BA8.BA8_DESCRI, ' ') AS BA8DESC, COALESCE(BA8.BA8_DPRINC, ' ') AS BA8DPRINC" +;
@@ -1230,7 +1372,7 @@ Static Function fCarregaMed()
 		" AND BA8.BA8_CODPRO = BR8.BR8_CODPSA" +;
 		" AND BA8.D_E_L_E_T_ = ' '" +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
-		" AND BR8.BR8_ALTCUS = '1'" +;
+		cFiltro +;
 		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA"
@@ -1244,6 +1386,8 @@ Static Function fCarregaMed()
 			aAdd(aMed, {cCod, AllTrim((cAlias)->BR8_DESCRI), {}, AllTrim((cAlias)->BR8_CODPAD), __VLR_ND})
 			nPos := Len(aMed)
 		EndIf
+		// Mesmo CODPSA em outro CODPAD aponta para o mesmo item da lista
+		oIdx[AllTrim((cAlias)->BR8_CODPAD) + "|" + cCod] := nPos
 		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BR8_DESCRI)
 		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BA8DESC)
 		fAddTermo(aMed[nPos][__M_TERMOS], (cAlias)->BA8DPRINC)
@@ -1254,7 +1398,7 @@ Static Function fCarregaMed()
 
 	If Len(aMed) > 0
 		BEGIN SEQUENCE
-			fCarregaVlrTab(aMed)
+			fCarregaVlrTab(aMed, cFiltro)
 		RECOVER USING oErro
 			fLog("WARN", "Valor de tabela nao apurado: " + IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
 			aEval(aMed, {|x| x[__M_VLRTAB] := IIf(Empty(x[__M_VLRTAB]), __VLR_ND, x[__M_VLRTAB])})
@@ -1267,32 +1411,56 @@ Return aMed
 Preenche o valor de tabela de cada medicamento: BA8 (BA8_CODTAB) -> BD4 na vigencia mais recente,
 isto e, o maior BD4_VIGINI <= hoje para cada tabela + unidade (BD4_CODIGO). BD4_VIGFIM nao e considerado
 e vigencias futuras ficam de fora.
-Um medicamento pode ter mais de uma tabela/unidade; os valores sao listados separados por " / ".
-Sem os campos no dicionario, o valor fica __VLR_ND e o job segue.
+Um medicamento pode ter mais de uma tabela/unidade: uma linha por tabela + unidade, com a descricao e o
+Tp.Pad.Saude do cadastro de tabelas (__TAB_ALIAS), mostradas no e-mail em uma mini-tabela (fVlrTabHtml).
+Sem os campos do valor no dicionario, o valor fica __VLR_ND e o job segue; sem os do cadastro de tabelas,
+as linhas saem so com o codigo.
 @type function
-@param aMed, array, medicamentos de fCarregaMed() (alterado por referencia)
+@param aMed, array, medicamentos de fCarregaMed() (alterado por referencia): __M_VLRTAB recebe
+	{ {nValor, cCodTab, cDescri, cCodPad, cUnid}, ... } (posicoes __L_*) ou "sem valor na tabela"
+@param cFiltro, character, filtro do criterio na BR8 (fSqlFiltroBr8), o mesmo de fCarregaMed()
 /*/
-Static Function fCarregaVlrTab(aMed)
+Static Function fCarregaVlrTab(aMed, cFiltro)
 
-	Local cHoje  := DToS(Date())
-	Local cFalta := ""
-	Local cQuery := ""
-	Local cAlias := ""
-	Local cValor := ""
-	Local nPos   := 0
-	Local nI     := 0
+	Local aTab    := __TAB_CPOS
+	Local cFalta  := ""
+	Local cQuery  := ""
+	Local cAlias  := ""
+	Local cTabSel := " ' ' AS TABDESC, ' ' AS TABPAD"
+	Local cTabJoi := ""
+	Local cVigSel := ", ' ' AS VIGFIM"
+	Local xVigFim := Nil
+	Local oPos    := JsonObject():New()
+	Local nPos    := 0
+	Local nI      := 0
 
-	If !fCamposOk("BA8", {"BA8_CODTAB"}, @cFalta) .Or.;
-		!fCamposOk("BD4", {"BD4_CODTAB", "BD4_CDPADP", "BD4_CODPRO", "BD4_CODIGO", "BD4_VALREF", "BD4_VIGINI"}, @cFalta)
+	If !fCamposValorOk(@cFalta)
 		fLog("WARN", "Valor de tabela indisponivel: " + cFalta + " nao existe no dicionario. E-mail sai com '" + __VLR_ND + "'.")
 		Return
 	EndIf
 
+	If fCamposOk(__TAB_ALIAS, aTab, @cFalta)
+		cTabSel := " COALESCE(TAB." + aTab[3] + ", ' ') AS TABDESC, COALESCE(TAB." + aTab[4] + ", ' ') AS TABPAD"
+		cTabJoi := " LEFT JOIN " + RetSqlName(__TAB_ALIAS) + " TAB" +;
+			" ON TAB." + __TAB_ALIAS + "_FILIAL = '" + xFilial(__TAB_ALIAS) + "'" +;
+			" AND TAB." + aTab[1] + " + TAB." + aTab[2] + " = BD4.BD4_CODTAB" +;
+			" AND TAB.D_E_L_E_T_ = ' '"
+	Else
+		fLog("WARN", "Descricao das tabelas de preco indisponivel: " + cFalta + " nao existe no dicionario. E-mail sai so com o codigo.")
+	EndIf
+
+	// So informativo (coluna Vigencia do e-mail): a escolha da linha vigente (fSqlBd4Vig) nao usa o BD4_VIGFIM
+	If fCamposOk("BD4", {"BD4_VIGFIM"}, @cFalta)
+		cVigSel := ", BD4.BD4_VIGFIM AS VIGFIM"
+	EndIf
+
+	// CODPSA -> posicao em aMed: no criterio VALOR a lista pode ter milhares de itens
 	For nI := 1 To Len(aMed)
-		aMed[nI][__M_VLRTAB] := ""
+		aMed[nI][__M_VLRTAB] := {}
+		oPos[aMed[nI][__M_CODPSA]] := nI
 	Next nI
 
-	cQuery := "SELECT DISTINCT BR8.BR8_CODPSA, BD4.BD4_CODTAB, BD4.BD4_CODIGO, BD4.BD4_VALREF" +;
+	cQuery := "SELECT DISTINCT BR8.BR8_CODPSA, BD4.BD4_CODTAB, BD4.BD4_CODIGO, BD4.BD4_VALREF," + cTabSel + cVigSel +;
 		" FROM " + RetSqlName("BR8") + " BR8" +;
 		" INNER JOIN " + RetSqlName("BA8") + " BA8" +;
 		" ON BA8.BA8_FILIAL = '" + xFilial("BA8") + "'" +;
@@ -1304,20 +1472,11 @@ Static Function fCarregaVlrTab(aMed)
 		" AND BD4.BD4_CODTAB = BA8.BA8_CODTAB" +;
 		" AND BD4.BD4_CDPADP = BA8.BA8_CDPADP" +;
 		" AND BD4.BD4_CODPRO = BA8.BA8_CODPRO" +;
-		" AND BD4.BD4_VIGINI <= '" + cHoje + "'" +;
 		" AND BD4.BD4_VALREF > 0" +;
-		" AND BD4.D_E_L_E_T_ = ' '" +;
-		" AND NOT EXISTS (SELECT 1 FROM " + RetSqlName("BD4") + " BD4N" +;
-			" WHERE BD4N.BD4_FILIAL = BD4.BD4_FILIAL" +;
-			" AND BD4N.BD4_CODTAB = BD4.BD4_CODTAB" +;
-			" AND BD4N.BD4_CDPADP = BD4.BD4_CDPADP" +;
-			" AND BD4N.BD4_CODPRO = BD4.BD4_CODPRO" +;
-			" AND BD4N.BD4_CODIGO = BD4.BD4_CODIGO" +;
-			" AND BD4N.BD4_VIGINI > BD4.BD4_VIGINI" +;
-			" AND BD4N.BD4_VIGINI <= '" + cHoje + "'" +;
-			" AND BD4N.D_E_L_E_T_ = ' ')" +;
+		fSqlBd4Vig("BD4") +;
+		cTabJoi +;
 		" WHERE BR8.BR8_FILIAL = '" + xFilial("BR8") + "'" +;
-		" AND BR8.BR8_ALTCUS = '1'" +;
+		cFiltro +;
 		" AND BR8.BR8_CODPAD IN " + fSqlIn(__CODPAD_BR8) +;
 		" AND BR8.D_E_L_E_T_ = ' '" +;
 		" ORDER BY BR8.BR8_CODPSA, BD4.BD4_CODTAB, BD4.BD4_CODIGO"
@@ -1325,10 +1484,12 @@ Static Function fCarregaVlrTab(aMed)
 	cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
 
 	While !(cAlias)->(Eof())
-		nPos := aScan(aMed, {|x| x[__M_CODPSA] == AllTrim((cAlias)->BR8_CODPSA)})
-		If nPos > 0
-			cValor := fMoeda((cAlias)->BD4_VALREF) + " (tab " + AllTrim((cAlias)->BD4_CODTAB) + " " + AllTrim((cAlias)->BD4_CODIGO) + ")"
-			aMed[nPos][__M_VLRTAB] += IIf(Empty(aMed[nPos][__M_VLRTAB]), "", " / ") + cValor
+		nPos := oPos[AllTrim((cAlias)->BR8_CODPSA)]
+		If ValType(nPos) == "N"
+			xVigFim := (cAlias)->VIGFIM
+			aAdd(aMed[nPos][__M_VLRTAB], {(cAlias)->BD4_VALREF, AllTrim((cAlias)->BD4_CODTAB), AllTrim((cAlias)->TABDESC),;
+				AllTrim((cAlias)->TABPAD), AllTrim((cAlias)->BD4_CODIGO),;
+				IIf(ValType(xVigFim) == "D", DToS(xVigFim), AllTrim(cValToChar(xVigFim)))})
 		EndIf
 		(cAlias)->(DbSkip())
 	EndDo
@@ -1345,8 +1506,8 @@ Return
 
 /*/{Protheus.doc} fProcAltoCusto
 Procedimentos de alto custo lancados na guia: itens da tabela escolhida por fCfgProc() (B53_TIPO e
-B71_ALIMOV), pela chave do B53_NUMGUI, com BR8_ALTCUS = '1' no CODPAD + CODPRO do item e CODPAD em
-__CODPAD_BR8.
+B71_ALIMOV), pela chave do B53_NUMGUI, cujo CODPAD + CODPRO esta na lista de fCarregaMed() (indice
+oCrit["idx"]): o criterio (ALTCUS ou VALOR) ja foi aplicado na lista, sem consulta extra por guia.
 Todos os procedimentos da guia vao para o log (com a tabela e a marca ALTO CUSTO); so os de alto
 custo sao devolvidos.
 Valor na guia = soma de quantidade solicitada x valor unitario (quantidade zerada conta como 1).
@@ -1354,10 +1515,11 @@ Tabela ou campo ausente no dicionario so vai para o log (nova tentativa nao reso
 @type function
 @param aItem, array, B71 com __I_ALIMOV, __I_TIPO e __I_B53GUI (fMontaB71)
 @param aMed, array, medicamentos de fCarregaMed() (descricao e valor de tabela)
+@param oCrit, object, criterio da lista (fConfigApi), com o indice montado por fCarregaMed()
 @param lOk, logical, (por referencia) .F. se a consulta falhou (falha temporaria: a B71 nao avanca)
 @return array, itens no formato __F_*, com __F_ORIGEM = __O_PROC
 /*/
-Static Function fProcAltoCusto(aItem, aMed, lOk)
+Static Function fProcAltoCusto(aItem, aMed, oCrit, lOk)
 
 	Local aCfg    := fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])
 	Local cIte    := aCfg[__C_ALIAS]
@@ -1379,6 +1541,8 @@ Static Function fProcAltoCusto(aItem, aMed, lOk)
 	Local cValor  := ""
 	Local lAltCus := .F.
 	Local lAltBr8 := .F.
+	Local lCritAl := oCrit["criterio"] == __CRIT_ALT
+	Local oIdx    := oCrit["idx"]
 	Local oErro   := Nil
 	Local nIni    := 1
 	Local nTotal  := 0
@@ -1426,15 +1590,17 @@ Static Function fProcAltoCusto(aItem, aMed, lOk)
 			cCod    := AllTrim((cAlias)->CODPRO)
 			cCodPad := AllTrim((cAlias)->CODPAD)
 			cDescri := IIf(Empty((cAlias)->BR8COD), "(nao cadastrado na BR8)", AllTrim((cAlias)->BR8_DESCRI))
-			lAltBr8 := AllTrim((cAlias)->BR8_ALTCUS) == "1"
-			lAltCus := lAltBr8 .And. aScan(__CODPAD_BR8, cCodPad) > 0
+			nM      := oIdx[cCodPad + "|" + cCod]
+			lAltCus := ValType(nM) == "N"
+			// BR8_ALTCUS so explica no log por que um item marcado ficou de fora (CODPAD fora de __CODPAD_BR8)
+			lAltBr8 := lCritAl .And. AllTrim((cAlias)->BR8_ALTCUS) == "1"
 			aAdd(aLinhas, "    [" + cIte + "] " + cCodPad + " " + cCod + " - " + cDescri +;
 				" | qtd " + fQtd((cAlias)->QTD) + " | " + fMoeda((cAlias)->VALOR) +;
-				IIf(lAltCus, " | ALTO CUSTO", IIf(lAltBr8, " | alto custo na BR8, CODPAD fora de " + fCodPadTxt() + " (ignorado)", "")))
+				IIf(lAltCus, " | ALTO CUSTO" + IIf(lCritAl, "", " (" + fCritTxt(oCrit) + ")"),;
+					IIf(lAltBr8, " | alto custo na BR8, CODPAD fora de " + fCodPadTxt() + " (ignorado)", "")))
 			If lAltCus
-				nM := aScan(aMed, {|x| x[__M_CODPSA] == cCod .And. x[__M_CODPAD] == cCodPad})
 				aAdd(aProc, {cCod, cDescri, "", "", cCodPad,;
-					IIf(nM > 0, aMed[nM][__M_VLRTAB], __VLR_ND), fMoeda((cAlias)->VALOR), "", __O_PROC, fQtd((cAlias)->QTD)})
+					aMed[nM][__M_VLRTAB], fMoeda((cAlias)->VALOR), "", __O_PROC, fQtd((cAlias)->QTD)})
 			EndIf
 			(cAlias)->(DbSkip())
 		EndDo
@@ -1542,6 +1708,80 @@ Return "(" + cRet + ")"
 /*/
 Static Function fCodPadTxt()
 Return fListaCpo(__CODPAD_BR8)
+
+/*/{Protheus.doc} fCritTxt
+@type function
+@param oCrit, object, criterio da lista (fConfigApi)
+@return character, criterio para log e e-mail: "BR8_ALTCUS = '1'" ou "valor de tabela BD4 > R$ 1.500,00"
+/*/
+Static Function fCritTxt(oCrit)
+
+	If oCrit["criterio"] == __CRIT_VLR
+		Return "valor de tabela BD4 > " + fMoeda(oCrit["vlrmin"])
+	EndIf
+
+Return "BR8_ALTCUS = '1'"
+
+/*/{Protheus.doc} fSqlFiltroBr8
+Filtro do criterio na BR8 (alias BR8), usado por fCarregaMed() e fCarregaVlrTab() para que as duas
+consultas tragam os mesmos itens. No criterio VALOR, o EXISTS parte da chave da BR8 e para no primeiro
+BD4 vigente acima do minimo: os termos continuam vindo de todas as linhas da BA8 do item.
+@type function
+@param oCrit, object, criterio da lista (fConfigApi)
+@return character, " AND ..." para o WHERE da BR8
+/*/
+Static Function fSqlFiltroBr8(oCrit)
+
+	If oCrit["criterio"] != __CRIT_VLR
+		Return " AND BR8.BR8_ALTCUS = '1'"
+	EndIf
+
+Return " AND EXISTS (SELECT 1 FROM " + RetSqlName("BA8") + " BA8V" +;
+		" INNER JOIN " + RetSqlName("BD4") + " BD4V" +;
+		" ON BD4V.BD4_FILIAL = '" + xFilial("BD4") + "'" +;
+		" AND BD4V.BD4_CODTAB = BA8V.BA8_CODTAB" +;
+		" AND BD4V.BD4_CDPADP = BA8V.BA8_CDPADP" +;
+		" AND BD4V.BD4_CODPRO = BA8V.BA8_CODPRO" +;
+		" AND BD4V.BD4_VALREF > " + AllTrim(Str(oCrit["vlrmin"], 18, 2)) +;
+		fSqlBd4Vig("BD4V") +;
+		" WHERE BA8V.BA8_FILIAL = '" + xFilial("BA8") + "'" +;
+		" AND BA8V.BA8_CDPADP = BR8.BR8_CODPAD" +;
+		" AND BA8V.BA8_CODPRO = BR8.BR8_CODPSA" +;
+		" AND BA8V.D_E_L_E_T_ = ' ')"
+
+/*/{Protheus.doc} fSqlBd4Vig
+Restringe a BD4 do alias a vigencia mais recente ate hoje: o maior BD4_VIGINI <= hoje para cada
+tabela + CDPADP + CODPRO + unidade (BD4_CODIGO). BD4_VIGFIM nao e considerado e vigencias futuras ficam de
+fora. O NOT EXISTS usa a chave do indice da BD4 (FILIAL + CODTAB + CDPADP + CODPRO + CODIGO + VIGINI).
+@type function
+@param cAli, character, alias da BD4 na consulta
+@return character, " AND ..." para o ON/WHERE da BD4
+/*/
+Static Function fSqlBd4Vig(cAli)
+
+	Local cHoje := DToS(Date())
+	Local cNov  := cAli + "N"
+
+Return " AND " + cAli + ".BD4_VIGINI <= '" + cHoje + "'" +;
+		" AND " + cAli + ".D_E_L_E_T_ = ' '" +;
+		" AND NOT EXISTS (SELECT 1 FROM " + RetSqlName("BD4") + " " + cNov +;
+			" WHERE " + cNov + ".BD4_FILIAL = " + cAli + ".BD4_FILIAL" +;
+			" AND " + cNov + ".BD4_CODTAB = " + cAli + ".BD4_CODTAB" +;
+			" AND " + cNov + ".BD4_CDPADP = " + cAli + ".BD4_CDPADP" +;
+			" AND " + cNov + ".BD4_CODPRO = " + cAli + ".BD4_CODPRO" +;
+			" AND " + cNov + ".BD4_CODIGO = " + cAli + ".BD4_CODIGO" +;
+			" AND " + cNov + ".BD4_VIGINI > " + cAli + ".BD4_VIGINI" +;
+			" AND " + cNov + ".BD4_VIGINI <= '" + cHoje + "'" +;
+			" AND " + cNov + ".D_E_L_E_T_ = ' ')"
+
+/*/{Protheus.doc} fCamposValorOk
+@type function
+@param cFalta, character, (por referencia) tabela ou campo que falta
+@return logical, .T. se a BA8 e a BD4 tem os campos do valor de tabela (fCarregaVlrTab e criterio VALOR)
+/*/
+Static Function fCamposValorOk(cFalta)
+Return fCamposOk("BA8", {"BA8_CODTAB"}, @cFalta) .And.;
+	fCamposOk("BD4", {"BD4_CODTAB", "BD4_CDPADP", "BD4_CODPRO", "BD4_CODIGO", "BD4_VALREF", "BD4_VIGINI"}, @cFalta)
 
 /*/{Protheus.doc} fFiltroDep
 @type function
@@ -2091,15 +2331,20 @@ Return IIf(Upper(AllTrim(GetEnvServer())) == __ENV_PROD, __URL_PROD, __URL_DEV)
 Static Function fApiUrl()
 Return fApiBase() + __API_PATH
 
-/*/{Protheus.doc} fIaHabilitada
-Pergunta a API se a IA esta ligada (GET __CFG_PATH, IA_HABILITADA no .env da API).
+/*/{Protheus.doc} fConfigApi
+Pergunta a API se a IA esta ligada e qual o criterio dos medicamentos (GET __CFG_PATH; IA_HABILITADA,
+MEDICAMENTO_CRITERIO e MEDICAMENTO_VALOR_MIN no .env da API). API sem "criterio" (versao anterior):
+__CRIT_PAD.
 @type function
 @param lIa, logical, (por referencia) .T. se a IA esta ligada
 @param cModelo, character, (por referencia) modelo da IA, quando ligada
+@param oCrit, object, (por referencia) JsonObject {criterio: __CRIT_ALT | __CRIT_VLR, vlrmin: numerico};
+	sempre preenchido (__CRIT_PAD em caso de falha), para o U_chkMEDALTC seguir
 @param cErro, character, (por referencia) motivo da falha
-@return logical, .F. se a API nao respondeu o flag (falha temporaria: a execucao nao avanca o watermark)
+@return logical, .F. se a API nao respondeu o flag ou o criterio veio invalido (falha temporaria: a execucao
+	nao avanca o watermark)
 /*/
-Static Function fIaHabilitada(lIa, cModelo, cErro)
+Static Function fConfigApi(lIa, cModelo, oCrit, cErro)
 
 	Local oRest   := Nil
 	Local oResp   := JsonObject():New()
@@ -2107,10 +2352,14 @@ Static Function fIaHabilitada(lIa, cModelo, cErro)
 	Local cHost   := ""
 	Local cPath   := ""
 	Local cResp   := ""
+	Local cCrit   := ""
 
 	lIa     := .F.
 	cModelo := ""
 	cErro   := ""
+	oCrit   := JsonObject():New()
+	oCrit["criterio"] := __CRIT_PAD
+	oCrit["vlrmin"]   := 0
 
 	fSplitUrl(fApiBase() + __CFG_PATH, @cHost, @cPath)
 	aAdd(aHeader, "Authorization: Bearer " + AllTrim(__API_TOKEN))
@@ -2140,6 +2389,26 @@ Static Function fIaHabilitada(lIa, cModelo, cErro)
 
 	lIa     := oResp["ia"]
 	cModelo := IIf(ValType(oResp["modelo"]) == "C", oResp["modelo"], "")
+
+	If ValType(oResp["criterio"]) != "C"
+		fLog("INFO", "API sem o criterio dos medicamentos (versao anterior): usando " + __CRIT_PAD)
+		Return .T.
+	EndIf
+
+	cCrit := Upper(AllTrim(oResp["criterio"]))
+	Do Case
+	Case cCrit == __CRIT_ALT
+		oCrit["criterio"] := __CRIT_ALT
+	Case cCrit == __CRIT_VLR .And. ValType(oResp["valorMin"]) == "N" .And. oResp["valorMin"] > 0
+		oCrit["criterio"] := __CRIT_VLR
+		oCrit["vlrmin"]   := oResp["valorMin"]
+	Case cCrit == __CRIT_VLR
+		cErro := "criterio " + __CRIT_VLR + " sem valorMin maior que zero: conferir MEDICAMENTO_VALOR_MIN no .env da API"
+		Return .F.
+	Otherwise
+		cErro := "criterio de medicamentos desconhecido: '" + cCrit + "' (esperado altcus ou valor)"
+		Return .F.
+	EndCase
 
 Return .T.
 

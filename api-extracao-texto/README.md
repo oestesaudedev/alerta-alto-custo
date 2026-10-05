@@ -228,8 +228,8 @@ docker exec -e SFTP_ARQUIVO="nome-do-arquivo.pdf" api-extracao-texto node test/e
 
 ```bash
 cp .env.example .env    # obrigatório; defina API_TOKEN e SFTP_*
-# produção (sem test/ no container, /extrair desligado)
-API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f ../infra/docker-compose.yml up -d --build
+# produção em 10.1.5.14:6177 (infra/producao.env; sem test/ no container, /extrair desligado)
+docker compose --env-file ../infra/producao.env -f ../infra/docker-compose.yml up -d --build
 # dev/testes (monta test/ em /app/test e liga o /extrair)
 docker compose -f ../infra/docker-compose.yml -f ../infra/docker-compose.dev.yml up -d --build
 ```

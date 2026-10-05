@@ -1,5 +1,5 @@
 # API NestJS de extração + OCR — compose base (produção)
-# Produção: API_BIND_IP=10.1.5.14 API_HOST_PORT=6177 docker compose -f infra/docker-compose.yml up -d --build
+# Produção (10.1.5.14:6177): docker compose --env-file infra/producao.env -f infra/docker-compose.yml up -d --build
 # Dev/testes: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 # Porta do host: API_HOST_PORT (padrão 3010), só na interface API_BIND_IP (padrão 127.0.0.1).
 # O Docker ignora as regras do ufw: restrinja o acesso ao AppServer na chain DOCKER-USER

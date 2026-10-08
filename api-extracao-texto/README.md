@@ -28,7 +28,8 @@ Variáveis (`.env`):
 | `API_TOKEN` | — (obrigatório) | Header `Authorization` (Bearer ou valor puro). A API não sobe com ele vazio, com menos de 32 caracteres ou `dev-change-me` |
 | `OCR_TMP_DIR` | `./ocr-tmp` | Pasta temporária. Sobras de uma execução interrompida são apagadas na subida |
 | `EXTRACAO_CONCORRENCIA` | `2` | Extrações simultâneas; as demais esperam numa fila de até 20, acima disso `{ ok: false, erro: "API ocupada..." }` |
-| `EXTRAIR_BASE64` | `false` | `true` habilita o `POST /extrair` (só testes; o `docker-compose.dev.yml` liga). Desligado, responde 404 e o limite do JSON cai para `2mb` |
+| `EXTRAIR_BASE64` | `false` | `true` habilita o `POST /extrair` (só testes; o `docker-compose.dev.yml` liga). Desligado, responde 404 e o limite do JSON passa a ser o `BODY_LIMIT_LISTA` |
+| `BODY_LIMIT_LISTA` | `20mb` | Tamanho máximo do JSON com `EXTRAIR_BASE64=false`. O maior pedido é o `POST /medicamentos` (~4,6 MB para 30 mil itens) |
 | `PDF_MIN_TEXT_CHARS` | `40` | Abaixo disso, PDF vai para OCR |
 | `PDF_MAX_PAGINAS` | `30` | Máximo de páginas de PDF escaneado passadas pelo OCR; o resto é ignorado (com aviso no log) para a resposta caber no timeout do job |
 | `BODY_LIMIT` | `25mb` | Tamanho máximo do JSON com `EXTRAIR_BASE64=true` (o Base64 ocupa ~1,37x o arquivo) |
@@ -45,6 +46,8 @@ Variáveis (`.env`):
 | `IA_MODELO` | `claude-sonnet-5-5` | Modelo do Claude (`claude-haiku-4-5` é mais barato) |
 | `IA_TIMEOUT_MS` | `60000` | Tempo máximo da chamada ao Claude, incluindo 1 nova tentativa em 429/5xx |
 | `IA_MAX_CHARS` | `100000` | Máximo de caracteres do texto enviados ao Claude. Acima disso a IA lê só o início: `WARN` no log e aviso `texto-cortado` no `/verificar*` |
+| `PRE_BUSCA_MAX_CANDIDATOS` | `300` | Máximo de medicamentos achados pela [pré-busca](#pré-busca) enviados ao Claude por anexo. Acima disso vão os de maior pontuação e o `/verificar*` devolve o aviso `pre-busca-limite` |
+| `PRE_BUSCA_DF_MAX` | `500` | Palavra presente em mais itens da lista que isto (ex.: nome genérico repetido) não traz candidato sozinha; só soma pontos |
 
 No Docker, o `infra/docker-compose.yml` lê este `.env` (`env_file`), então token e SFTP valem também para o container.
 
@@ -90,22 +93,38 @@ Mesmos headers (token obrigatório; sem ele, HTTP 401). O job chama uma vez por 
 
 Com `IA_HABILITADA=false`: `{ "ok": true, "ia": false }`. Mudar o valor exige reiniciar a API. Se o job não conseguir ler o `/config` (API fora, token errado, API antiga sem o endpoint), a execução termina sem avançar o `Z_NOTIENCA`.
 
+### `POST /medicamentos` (usado pelo job Protheus com a IA ligada)
+
+Mesmos headers. O job manda a lista completa de medicamentos uma vez por execução, no primeiro anexo a verificar. A API monta o índice da [pré-busca](#pré-busca), guarda a lista em memória e devolve o `listaId`, usado depois no `/verificar-sftp`:
+
+```json
+{ "medicamentos": [{ "codigo": "90000001", "descricao": "INFLIXIMABE 100MG", "termos": ["INFLIXIMABE 100MG", "INFLIXIMABE"] }] }
+```
+
+```json
+{ "ok": true, "listaId": "011e7f0a...", "itens": 28578, "palavras": 9120, "semPalavra": 3 }
+```
+
+- Até 100000 itens (sem o teto antigo de 5000). A mesma lista devolve o mesmo `listaId` (sha256 do conteúdo).
+- `semPalavra`: itens sem nenhuma palavra que identifique o medicamento (descrição só com unidade e forma, ou só palavras comuns). A pré-busca nunca os acha; o job registra um `WARN`.
+- A API guarda até 3 listas, por até 24 h sem uso. Depois de reiniciar a API, o `/verificar-sftp` com um `listaId` antigo responde `{ "ok": false, "erro": "lista de medicamentos desconhecida: reenviar" }`, e o job reenvia a lista e repete o anexo uma vez.
+
 ### `POST /verificar-sftp` (usado pelo job Protheus com a IA ligada)
 
-Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e manda ao Claude o texto mascarado e a lista de medicamentos. Devolve os medicamentos achados, sem o texto; o job junta esses achados aos procedimentos de alto custo da guia:
+Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto, faz a [pré-busca](#pré-busca) dos medicamentos da lista no texto e manda ao Claude o texto mascarado e **só os candidatos achados**. Sem candidato, o Claude não é chamado. Devolve os medicamentos achados, sem o texto; o job junta esses achados aos procedimentos de alto custo da guia:
 
 ```json
 {
   "arquivo": "guia.pdf",
   "ambiente": "CYWSXT_PROD",
-  "medicamentos": [{ "codigo": "90000001", "descricao": "INFLIXIMABE 100MG", "termos": ["INFLIXIMABE 100MG", "INFLIXIMABE"] }],
+  "listaId": "011e7f0a...",
   "mascarar": ["JOAO CARLOS DA SILVA", "00010002000123001"]
 }
 ```
 
 ```json
 {
-  "ok": true, "metodo": "pdf-parse", "modelo": "claude-sonnet-5-5",
+  "ok": true, "metodo": "pdf-parse", "modelo": "claude-sonnet-5-5", "candidatos": 2,
   "achados": [
     { "codigo": "90000001", "termo": "INFLIXIMABE", "origem": "ia", "observacao": "IA (alta): nome exato da lista" },
     { "codigo": "90000002", "termo": "STELARA", "origem": "ia", "observacao": "IA (media): nome comercial de ustequinumabe" }
@@ -114,7 +133,8 @@ Mesmos headers. Baixa o anexo do SFTP como o `/extrair-sftp`, extrai o texto e m
 }
 ```
 
-- `medicamentos` é obrigatório e não pode ser vazio (HTTP 400); até 5000 itens, com `descricao` e cada termo de até 1000 caracteres. `mascarar` é opcional (até 20 nomes).
+- Informe `listaId` (do `POST /medicamentos`) ou `medicamentos` (a lista no próprio pedido, até 5000 itens, para testes e para o job antigo). Sem nenhum dos dois: `{ "ok": false, "erro": "informe listaId ou medicamentos" }`, antes de baixar o anexo. `mascarar` é opcional (até 20 nomes).
+- `candidatos`: quantos medicamentos da lista a pré-busca achou no texto e mandou ao Claude. Com mais que `PRE_BUSCA_MAX_CANDIDATOS`, vai também o aviso `pre-busca-limite`.
 - Só medicamento pedido de forma explícita para o paciente (contexto `solicitado`: "solicito", "prescrevo", receita com posologia, pedido de autorização) chega à classificação. Menções `informativo` (folheto, bula, termo de consentimento, lista de reações adversas), `historico` ("paciente em uso de", uso contínuo, uso anterior, suspenso, alergia; estar em uso não é pedido de cobertura) e `outro` são descartadas na API, sem aviso; o log da API mostra só a contagem.
 - Classificação ([`classificacao-ia.ts`](src/extracao/verificacao/classificacao-ia.ts)): confiança `alta` ou `media` vira achado (origem `ia`); `baixa` vira aviso `confianca-baixa`. A confiança mede só a identificação do nome (exato, nome comercial, erro de OCR). Texto maior que `IA_MAX_CHARS` gera o aviso `texto-cortado` (código vazio).
 - Falha da IA (timeout, chave inválida, `IA_HABILITADA=false`): `{ "ok": false, "erro": "IA indisponivel: ..." }`. O job trata como falha temporária e retoma a B71 na próxima execução (com a IA desligada ele nem chama este endpoint; o erro só aparece se o flag mudar no meio de uma execução).
@@ -172,10 +192,21 @@ Com a lista e a extração OK, a resposta ganha o campo `ia`:
   - os nomes e a matrícula do campo opcional `mascarar` (o job envia beneficiário, solicitante e matrícula da guia): cada parte do nome com 3+ letras, sem acento e tolerando I/l/1, O/0, S/5 do OCR;
   - o que vem depois de rótulos no início da linha ou coluna ("Paciente:", "Beneficiário:", "Nome da mãe:", "Médico solicitante:").
 
-  Palavras dos medicamentos da lista nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados (inclusive o descarte do que não é `solicitado`), corte em `IA_MAX_CHARS` e falha do provedor; o `test:verificacao` confere a classificação dos achados e a falha da IA virando erro.
-- A lista de medicamentos vai no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo (`codigo`, `termo`, `contexto`, `confianca`, `motivo`), e códigos fora da lista ou com contexto diferente de `solicitado` são descartados.
+  Palavras dos medicamentos enviados ao Claude (os candidatos da pré-busca) nunca são mascaradas. Testes, sem chave nem API no ar: `npm run build && npm run test:mascara && npm run test:ia && npm run test:verificacao && npm run test:pre-busca`. O `test:ia` usa um modelo falso e confere mascaramento no envio, validação dos achados (inclusive o descarte do que não é `solicitado`), corte em `IA_MAX_CHARS` e falha do provedor. O `test:verificacao` confere a classificação dos achados, a falha da IA virando erro, o `listaId` e o envio só dos candidatos. O `test:pre-busca` confere a tolerância a OCR, as palavras ignoradas, o corte e o tempo com 30 mil itens.
+- Os candidatos da pré-busca vão no *system prompt* com `cache_control` (prompt caching). A saída é forçada numa ferramenta com esquema fixo (`codigo`, `termo`, `contexto`, `confianca`, `motivo`), e códigos fora da lista ou com contexto diferente de `solicitado` são descartados.
 - A chamada ao Claude roda fora da fila de OCR (`EXTRACAO_CONCORRENCIA`).
 - O log registra modelo, quantidade de achados e de não solicitados, tempo e tokens (sem texto do anexo).
+
+## Pré-busca
+
+A lista pode ter dezenas de milhares de medicamentos (`MEDICAMENTO_CRITERIO=valor` com valor baixo), e mandá-la inteira ao Claude em cada anexo estouraria o contexto e o custo. Por isso, antes da IA, a API procura no texto as palavras da lista ([`pre-busca.ts`](src/extracao/verificacao/pre-busca.ts)) e manda só os medicamentos achados:
+
+- **Palavras-chave** de cada item: palavras com 4 ou mais letras da `descricao` e dos `termos` (BR8_DESCRI, BA8_DESCRI, BA8_DPRINC). Ficam de fora números, unidades, formas farmacêuticas, embalagem e sais (MG, COMPRIMIDO, SOLUCAO, FRASCO, CLORIDRATO, SODICO...). Palavra presente em mais de `PRE_BUSCA_DF_MAX` itens só soma pontos e não traz candidato sozinha.
+- **Tolerância a OCR**: sem acento e sem caixa; `0`→O, `1`/`l`/`|`→I e `5`→S nos dois lados. Palavras com 6 ou mais letras casam também com uma letra a mais, a menos ou trocada (`INFLIXIMAB`, `RITUXIMABO`).
+- **Ordem**: mais palavras casadas e palavras mais raras na lista primeiro; casamento exato vale mais que aproximado. Vão até `PRE_BUSCA_MAX_CANDIDATOS`.
+- Sem candidato, o Claude não é chamado (`candidatos: 0`, sem achados).
+- **Limite**: nome comercial que não está na descrição nem nos termos (ex.: "Remicade" quando a BA8 só tem "INFLIXIMABE") não é achado. O alerta continua pegando o item pelos procedimentos lançados na guia.
+- Busca no mesmo trecho que o Claude lê (`IA_MAX_CHARS`). Índice de 30 mil itens: cerca de 0,3 a 0,5 s no `POST /medicamentos`; busca por anexo: poucos ms.
 
 ## Código
 
@@ -184,7 +215,7 @@ Em `src/extracao/`:
 | Peça | Papel |
 |------|-------|
 | `extracao.service.ts` | Orquestra a extração: valida o nome, baixa do SFTP, escolhe o extrator pela extensão e chama a IA (`/extrair*`) |
-| `verificacao/` | `/verificar*`: extração, chamada à IA e classificação dos achados (`classificacao-ia.ts`); `GET /config` (`config.controller.ts`) |
+| `verificacao/` | `/verificar*`: extração, pré-busca (`pre-busca.ts`), chamada à IA e classificação dos achados (`classificacao-ia.ts`); `POST /medicamentos` (`medicamentos.controller.ts` e o cache `lista-medicamentos.service.ts`); `GET /config` (`config.controller.ts`) |
 | `extratores/` | Strategy por formato: `PdfExtrator` (pdf-parse, com OCR de fallback) e `ImagemExtrator`. Formato novo: classe que implementa `Extrator`, incluída em `EXTRATORES` no `extracao.module.ts` |
 | `ocr/` | `MotorOcr` e a implementação `TesseractOcr`, usada pelos dois extratores |
 | `ia/` | `IaService` (prompt, mascaramento, validação dos achados) e a porta `ModeloIa`, com o adapter `ClaudeAdapter`. Provedor novo: outro adapter, escolhido por `IA_PROVEDOR` em `modelo-ia.factory.ts` |

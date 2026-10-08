@@ -9,16 +9,32 @@
 #DEFINE __LOG_DIR    "\logpls\"
 #DEFINE __LOG_ARQ    "alto_custo"
 
-#DEFINE __MAIL_TO    "alencar.magalhaes@oestesaude.com.br"
+// Destinatarios do alerta; cada e-mail um elemento: {"a@oestesaude.com.br", "b@oestesaude.com.br"}
+// #DEFINE __MAIL_TO    {"michel.ramos@oestesaude.com.br"}
+#DEFINE __MAIL_TO    {"michel.ramos@oestesaude.com.br", "alencar.magalhaes@oestesaude.com.br", "teresa.bueno@oestesaude.com.br"}
+
+// SMTP do alerta (conta sistema@ da Skymail), fixo no fonte; nao usa os MV_REL*
+#DEFINE __SMTP_HOST  "sender.skymail.net.br"
+#DEFINE __SMTP_PORTA 587
+#DEFINE __SMTP_USER  "sistema@oestesaude.com.br"
+#DEFINE __SMTP_SENHA "fr6RxF41Q8de"
+#DEFINE __SMTP_FROM  __SMTP_USER
+#DEFINE __SMTP_AUTH  .T.
+#DEFINE __SMTP_SSL   .F.
+#DEFINE __SMTP_TLS   .T.
 
 // URL da API: __URL_PROD no ambiente __ENV_PROD, __URL_DEV em qualquer outro (ver fApiUrl)
 #DEFINE __ENV_PROD   "CYWSXT_PROD"
 #DEFINE __URL_PROD   "http://10.1.5.14:6177"
-#DEFINE __URL_DEV    "https://easily-honest-pamula.ngrok-free.dev"
+#DEFINE __URL_DEV    "http://10.1.5.14:6177"
 #DEFINE __API_PATH   "/verificar-sftp"
 #DEFINE __API_URL    fApiUrl()
 // GET que informa se a IA esta ligada (IA_HABILITADA) e o criterio dos medicamentos (MEDICAMENTO_*) no .env da API
 #DEFINE __CFG_PATH   "/config"
+// POST com a lista completa de medicamentos, uma vez por execucao; devolve o listaId usado no __API_PATH
+#DEFINE __LST_PATH   "/medicamentos"
+// Erro da API quando nao conhece o listaId (API reiniciada): o job reenvia a lista e tenta de novo
+#DEFINE __LST_DESC   "lista de medicamentos desconhecida"
 #DEFINE __API_TOKEN  SuperGetMV("Z_MEDAPIT", .F., "")
 
 // Departamentos (B71_CODDEP) verificados; {} = todos
@@ -51,7 +67,9 @@
 #DEFINE __I_TIPO     10
 #DEFINE __I_B53GUI   11
 #DEFINE __I_CHVBEA   12
-#DEFINE __I_TAM      12
+#DEFINE __I_BENEF    13
+#DEFINE __I_DATENT   14
+#DEFINE __I_TAM      14
 
 // Chave da BEA (= indice 1 da BE2 e formato do B53_NUMGUI), lida no registro do B71_RECMOV
 #DEFINE __CPO_CHVBEA {"BEA_OPEMOV", "BEA_ANOAUT", "BEA_MESAUT", "BEA_NUMAUT"}
@@ -76,6 +94,9 @@
 #DEFINE __CPO_NOMES  {"_NOMUSR", "_NOMSOL"}
 // Campos da matricula do beneficiario na tabela origem, na ordem da chave da BA1
 #DEFINE __CPO_MATRIC {"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}
+// Data em que a guia entrou no sistema, na tabela origem (prefixo = alias): vale o primeiro sufixo
+// que existir no dicionario e estiver preenchido (conferir com levantamento/08-campos-data-entrada.sql)
+#DEFINE __CPO_DATENT {"_DTDIGI", "_DATDIG", "_DATSOL"}
 
 // Posicoes de cada anexo em __I_ANEXOS
 #DEFINE __A_CODOBJ   1
@@ -95,6 +116,11 @@
 #DEFINE __R_ACHADOS  5
 #DEFINE __R_AVISOS   6
 #DEFINE __R_MODELO   7
+#DEFINE __R_CANDID   8
+
+// Posicoes da lista de medicamentos enviada a API (fEnviaLista)
+#DEFINE __LS_MEDS    1
+#DEFINE __LS_ID      2
 
 // Posicoes de cada achado da API em __R_ACHADOS / __T_ACHADOS
 #DEFINE __V_CODIGO   1
@@ -121,8 +147,6 @@
 #DEFINE __CRIT_ALT   "ALTCUS"
 #DEFINE __CRIT_VLR   "VALOR"
 #DEFINE __CRIT_PAD   __CRIT_ALT
-// Maximo de medicamentos aceito pela API na lista (ArrayMaxSize do VerificarBaseDto)
-#DEFINE __MAX_MED    5000
 
 // Posicoes de cada item de alto custo do alerta (fProcAltoCusto, fBuscaMed, fMescla)
 #DEFINE __F_CODPSA   1
@@ -189,11 +213,14 @@ Fluxo: B71 (R_E_C_N_O_ > Z_NOTIENCA, DATMOV = hoje, CODDEP em __CODDEP; {} = tod
         A lista segue o criterio do GET __CFG_PATH (MEDICAMENTO_CRITERIO no .env da API), com CODPAD em
         __CODPAD_BR8: ALTCUS = BR8_ALTCUS = '1'; VALOR = valor de tabela BD4 vigente > MEDICAMENTO_VALOR_MIN
   -> 2. so com a IA ligada (IA_HABILITADA no .env da API, lido por GET __CFG_PATH a cada execucao):
-        AC9 -> ACB -> API (__API_URL) com o ACB_OBJETO, os medicamentos BR8/BA8 e os nomes da guia a
-        mascarar: a API baixa o arquivo do SFTP, extrai o texto e pede ao Claude os medicamentos da lista
-        citados. A IA confirma os procedimentos e acrescenta medicamentos citados que nao foram lancados
-        (confianca alta ou media; baixa so no log)
-  -> e-mail para __MAIL_TO se houver algum item.
+        a lista completa de medicamentos BR8/BA8 vai uma vez por execucao no POST __LST_PATH (sem limite
+        de tamanho no job), que devolve o listaId. Para cada anexo, AC9 -> ACB -> API (__API_URL) com o
+        ACB_OBJETO, o listaId e os nomes da guia a mascarar: a API baixa o arquivo do SFTP, extrai o
+        texto, faz uma pre-busca das palavras da lista no texto (tolerando erros de OCR) e pede ao Claude
+        so os candidatos achados. A IA confirma os procedimentos e acrescenta medicamentos citados que nao
+        foram lancados (confianca alta ou media; baixa so no log). API reiniciada no meio da execucao
+        responde __LST_DESC e o job reenvia a lista
+  -> e-mail para os destinatarios de __MAIL_TO se houver algum item.
 
 Com a IA desligada, os anexos nao sao enviados a API e o alerta sai so pelos procedimentos. Com a IA
 ligada mas indisponivel (sem chave, Claude fora), a API devolve erro e a B71 fica para a proxima rodada,
@@ -208,7 +235,8 @@ qualquer outro -> __URL_DEV + __API_PATH.
 Parametros SX6:
   Z_NOTIENCA - ultimo R_E_C_N_O_ da B71 ja verificado (criar com U_OSCRIAZNOT)
   Z_MEDAPIT  - token Bearer da API de extracao
-  MV_RELSERV, MV_RELACNT, MV_RELPSW, MV_RELAUTH, MV_RELSSL, MV_RELTLS, MV_RELFROM - SMTP padrao do Protheus
+
+SMTP: conta fixa no fonte (__SMTP_HOST, __SMTP_PORTA, __SMTP_USER, __SMTP_SENHA...); nao usa os MV_REL*.
 
 Z_NOTIENCA avanca apos cada B71 concluida (com ou sem anexo/medicamento/e-mail). Falha de API
 (inclusive o GET __CFG_PATH), SFTP, SMTP ou da consulta dos itens interrompe a execucao sem avancar, e a
@@ -224,7 +252,7 @@ Log: \logpls\alto_custo_AAAAMMDD.log no RootPath (um arquivo por dia, gravado pe
 alem do console do AppServer.
 
 Teste: U_chkMEDALTC([cArquivo]) confere configuracao, API/SFTP e SMTP sem gravar nada;
-U_dbgMEDALTC roda o job; U_dataMEDALTC("AAAAMMDD") roda o job para as B71 de outra data;
+U_mailMEDALTC([cPara]) envia um e-mail de teste pela conta do alerta; U_dbgMEDALTC roda o job; U_dataMEDALTC("AAAAMMDD") roda o job para as B71 de outra data;
 U_tstMEDALTC (teste-integrado/OS_TSTMEDALTC.tlpp) roda duas vezes
 e confere que nao ha reprocessamento.
 
@@ -416,13 +444,15 @@ Static Function fDiagnostico(cArquivo)
 	Local lSmtp    := .F.
 	Local nUltimo  := -1
 	Local nCampo   := 0
+	Local nSemNome := 0
+	Local nSemData := 0
 	Local nInicio  := 0
 	Local aMed     := {}
 	Local aB71     := {}
 	Local aRes     := {}
 	Local aItem    := {}
 	Local aAchados := {}
-	Local aMedApi  := {}
+	Local aLista   := {}
 	Local oServer  := Nil
 	Local oCrit    := Nil
 	Local lCfg     := .F.
@@ -434,7 +464,7 @@ Static Function fDiagnostico(cArquivo)
 	Local cFalta   := ""
 	Local nI       := 0
 
-	lOk := fChk("Token Z_MEDAPIT", fValidaCfg(), "") .And. lOk
+	lOk := fChk("Configuracao (token Z_MEDAPIT e __MAIL_TO)", fValidaCfg(), "") .And. lOk
 
 	nUltimo := fLeWatermark()
 	lOk := fChk("Watermark " + __PAR_WATER, nUltimo >= 0, cValToChar(nUltimo)) .And. lOk
@@ -446,8 +476,6 @@ Static Function fDiagnostico(cArquivo)
 
 	aMed := fCarregaMed(oCrit)
 	lOk := fChk("Medicamentos de alto custo (" + fCritTxt(oCrit) + ", BR8_CODPAD " + fCodPadTxt() + ", termos da BA8 se houver)", Len(aMed) > 0, cValToChar(Len(aMed)) + " item(ns)") .And. lOk
-	lOk := fChk("Lista de medicamentos para a API (ate " + cValToChar(__MAX_MED) + ")", Len(aMed) <= __MAX_MED,;
-		IIf(Len(aMed) <= __MAX_MED, "", "aumente o MEDICAMENTO_VALOR_MIN no .env da API")) .And. lOk
 	For nI := 1 To Min(Len(aMed), 5)
 		fLog("INFO", "  " + aMed[nI][__M_CODPSA] + " " + aMed[nI][__M_DESCRI] + " | " + cValToChar(Len(aMed[nI][__M_TERMOS])) +;
 			" termo(s) | valor de tabela: " + fVlrTabTxt(aMed[nI][__M_VLRTAB]))
@@ -468,32 +496,42 @@ Static Function fDiagnostico(cArquivo)
 				If !lProcOk
 					nCampo++
 				EndIf
+				nSemNome += IIf(Empty(aB71[nI][__I_BENEF]), 1, 0)
+				nSemData += IIf(Empty(aB71[nI][__I_DATENT]), 1, 0)
 			EndIf
 		Next nI
 		lOk := fChk("B71 na janela (R_E_C_N_O_ > " + cValToChar(nUltimo) + ", DATMOV = " + fDataMov() + ", CODDEP = " + fDepTxt() + ")",;
 			nCampo == 0, cValToChar(Len(aB71)) + " registro(s)" +;
 			IIf(nCampo > 0, "; " + cValToChar(nCampo) + " com campo inexistente ou erro na consulta dos itens (bloqueia o watermark)", "")) .And. lOk
+		If nSemNome + nSemData > 0
+			fLog("WARN", "  e-mail: " + cValToChar(nSemNome) + " B71 sem nome do beneficiario e " + cValToChar(nSemData) +;
+				" sem data da solicitacao (" + fListaCpo(__CPO_DATENT) + "); saem como " + __VLR_ND)
+		EndIf
 	EndIf
 
-	// A API exige a lista de medicamentos mesmo no teste de conexao
-	aMedApi := fMedApi(aMed)
+	// A API exige a lista de medicamentos (listaId) mesmo no teste de conexao
+	aLista  := {aMed, ""}
+	nInicio := Seconds()
+	lOk := fChk("Lista de medicamentos na API (POST " + fApiBase() + __LST_PATH + ")", fEnviaLista(aLista, @cErro),;
+		IIf(Empty(cErro), cValToChar(Len(aMed)) + " item(ns) em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s", cErro)) .And. lOk
 	nInicio := Seconds()
 	If !Empty(cArquivo) .And. lCfg .And. !lIa
 		fLog("INFO", "  IA desabilitada: o anexo " + cArquivo + " nao seria enviado a API; testando so a conexao")
 		cArquivo := ""
 	EndIf
 	If Empty(cArquivo)
-		aRes := fExtraiTexto("chk_medaltc_inexistente.pdf", aMedApi)
+		aRes := fExtraiTexto("chk_medaltc_inexistente.pdf", aLista)
 		lOk := fChk("API + token + SFTP (" + __API_URL + ")", aRes[__R_DEFINIT] .And. "encontrado no SFTP" $ aRes[__R_ERRO],;
 			IIf(aRes[__R_DEFINIT], "API respondeu e consultou o SFTP",;
 				IIf("Cannot POST" $ aRes[__R_ERRO], "API sem o " + __API_PATH + ": atualizar a API antes do patch", aRes[__R_ERRO]))) .And. lOk
 		fLog("INFO", "  Para testar a extracao e a IA, informe um arquivo: U_chkMEDALTC(" + '"arquivo.pdf"' + ")")
 	Else
-		aRes := fExtraiTexto(cArquivo, aMedApi)
-		lOk := fChk("Verificacao de " + cArquivo + " (extracao + IA)", aRes[__R_OK] .And. !Empty(aRes[__R_MODELO]),;
+		aRes := fExtraiTexto(cArquivo, aLista)
+		lOk := fChk("Verificacao de " + cArquivo + " (extracao + pre-busca + IA)", aRes[__R_OK] .And. !Empty(aRes[__R_MODELO]),;
 			IIf(!aRes[__R_OK], aRes[__R_ERRO],;
 				IIf(Empty(aRes[__R_MODELO]), "resposta sem o modelo da IA (API de versao anterior): atualizar a API",;
-					"via " + aRes[__R_METODO] + " e " + aRes[__R_MODELO] + " em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s"))) .And. lOk
+					"via " + aRes[__R_METODO] + ", " + cValToChar(aRes[__R_CANDID]) + " candidato(s) da pre-busca, " +;
+					aRes[__R_MODELO] + " em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s"))) .And. lOk
 		If aRes[__R_OK]
 			aItem := Array(__I_TAM)
 			aItem[__I_TEXTOS] := {{cArquivo, aRes[__R_METODO], aRes[__R_ACHADOS], aRes[__R_AVISOS]}}
@@ -510,7 +548,7 @@ Static Function fDiagnostico(cArquivo)
 	If lSmtp
 		oServer:SMTPDisconnect()
 	EndIf
-	lOk := fChk("SMTP (MV_RELSERV)", lSmtp, IIf(lSmtp, "conexao" + IIf(fMvLogico("MV_RELAUTH"), " e autenticacao", "") + " OK", "")) .And. lOk
+	lOk := fChk("SMTP (" + __SMTP_HOST + ")", lSmtp, IIf(lSmtp, "conexao" + IIf(__SMTP_AUTH, " e autenticacao", "") + " OK", "")) .And. lOk
 
 Return lOk
 
@@ -535,7 +573,7 @@ Static Function fProcessa(aRes, cData)
 	Local nUltimo  := 0
 	Local nGravado := 0
 	Local aMed     := {}
-	Local aMedApi  := {}
+	Local aLista   := {}
 	Local aB71     := {}
 	Local nEmails  := 0
 	Local oCrit    := Nil
@@ -571,15 +609,8 @@ Static Function fProcessa(aRes, cData)
 		Return
 	EndIf
 
-	If lIa .And. Len(aMed) > __MAX_MED
-		fLog("ERROR", cValToChar(Len(aMed)) + " medicamentos passam do limite da API (" + cValToChar(__MAX_MED) +;
-			"): aumente o MEDICAMENTO_VALOR_MIN no .env da API. Encerrando sem avancar " + __PAR_WATER + ".")
-		Return
-	EndIf
-
-	If lIa
-		aMedApi := fMedApi(aMed)
-	EndIf
+	// A lista so vai para a API (POST __LST_PATH) no primeiro anexo verificado: rodada sem anexo nao a envia
+	aLista := {aMed, ""}
 
 	fLog("INFO", "Watermark " + __PAR_WATER + " = " + cValToChar(nUltimo) +;
 		"; buscando B71 com R_E_C_N_O_ > " + cValToChar(nUltimo) +;
@@ -597,7 +628,7 @@ Static Function fProcessa(aRes, cData)
 	nGravado := nUltimo
 	For nI := 1 To Len(aB71)
 		fLogB71(aB71[nI])
-		If !fVerificaB71(aB71[nI], aMed, oCrit, @nEmails, aMedApi, lIa)
+		If !fVerificaB71(aB71[nI], aMed, oCrit, @nEmails, aLista, lIa)
 			fLog("WARN", "B71 " + cValToChar(aB71[nI][__I_RECNO]) + " nao concluida; ela e as seguintes" +;
 				" serao retomadas na proxima execucao. " + __PAR_WATER + " permanece em " + cValToChar(nGravado) + ".")
 			Exit
@@ -622,11 +653,11 @@ dos anexos na API e mescla dos dois resultados; se houver algum item, envia o e-
 @param aMed, array, medicamentos devolvidos por fCarregaMed()
 @param oCrit, object, criterio da lista (fConfigApi), com o indice montado por fCarregaMed()
 @param nEmails, numeric, contador de e-mails enviados (por referencia)
-@param aMedApi, array, lista de medicamentos enviada a API (fMedApi); vazia com a IA desligada
+@param aLista, array, {aMed, cListaId} da execucao (fEnviaLista); usada so com a IA ligada
 @param lIa, logical, IA ligada na API (fConfigApi)
 @return logical, .T. se a B71 pode ser dada como verificada (avancar Z_NOTIENCA)
 /*/
-Static Function fVerificaB71(aItem, aMed, oCrit, nEmails, aMedApi, lIa)
+Static Function fVerificaB71(aItem, aMed, oCrit, nEmails, aLista, lIa)
 
 	Local aProc    := {}
 	Local aIa      := {}
@@ -650,7 +681,7 @@ Static Function fVerificaB71(aItem, aMed, oCrit, nEmails, aMedApi, lIa)
 	EndIf
 
 	If lIa .And. aItem[__I_STATUS] == __ST_OK
-		If !fProcessaB71(aItem, aMedApi)
+		If !fProcessaB71(aItem, aLista)
 			Return .F.
 		EndIf
 		aIa := fBuscaMed(aItem, aMed)
@@ -799,6 +830,8 @@ Static Function fLogAvisos(cObjeto, aAvisos)
 			fLog("INFO", "  [IA] " + cCodigo + " em " + cObjeto + " com confianca baixa: fora do alerta")
 		Case aAvisos[nI][__W_TIPO] == "texto-cortado"
 			fLog("WARN", "  [IA] " + cObjeto + ": " + aAvisos[nI][__W_OBS])
+		Case aAvisos[nI][__W_TIPO] == "pre-busca-limite"
+			fLog("WARN", "  [pre-busca] " + cObjeto + ": " + aAvisos[nI][__W_OBS])
 		EndCase
 	Next nI
 
@@ -828,16 +861,26 @@ Static Function fLimpa(cTexto)
 Return AllTrim(cRet)
 
 /*/{Protheus.doc} fEnviaEmail
-Envia o alerta da B71 para __MAIL_TO pelo SMTP configurado no Protheus
-(MV_RELSERV, MV_RELACNT, MV_RELPSW, MV_RELAUTH, MV_RELSSL, MV_RELTLS, MV_RELFROM).
+Envia o alerta da B71 para os destinatarios de __MAIL_TO pela conta __SMTP_USER (__SMTP_HOST).
 @type function
 @param lIa, logical, IA ligada (inclui as colunas dos anexos)
 @param oCrit, object, criterio da lista (fConfigApi)
 @return logical, .T. se o e-mail foi aceito pelo servidor SMTP
 /*/
 Static Function fEnviaEmail(aItem, aAchados, lIa, oCrit)
+Return fEnviaMsg(fMailTo(), fAssunto(aItem, aAchados), fCorpoEmail(aItem, aAchados, lIa, oCrit))
 
-	Local cFrom   := AllTrim(SuperGetMV("MV_RELFROM", .F., ""))
+/*/{Protheus.doc} fEnviaMsg
+Envia uma mensagem HTML pela conta __SMTP_USER (__SMTP_HOST). Usada pelo alerta e pelo U_mailMEDALTC.
+O corpo deve ser so ASCII (texto do banco passa por fHtml), entao o charset do servidor nao importa.
+@type function
+@param cPara, character, destinatarios separados por ";"
+@param cAssunto, character, assunto
+@param cCorpo, character, HTML
+@return logical, .T. se o e-mail foi aceito pelo servidor SMTP
+/*/
+Static Function fEnviaMsg(cPara, cAssunto, cCorpo)
+
 	Local oServer := Nil
 	Local oMsg    := Nil
 	Local nErro   := 0
@@ -846,67 +889,109 @@ Static Function fEnviaEmail(aItem, aAchados, lIa, oCrit)
 		Return .F.
 	EndIf
 
-	If Empty(cFrom)
-		cFrom := AllTrim(SuperGetMV("MV_RELACNT", .F., ""))
-	EndIf
-
 	oMsg := TMailMessage():New()
 	oMsg:Clear()
-	oMsg:cFrom    := cFrom
-	oMsg:cTo      := __MAIL_TO
-	oMsg:cSubject := fAssunto(aItem, aAchados)
-	oMsg:cBody    := fCorpoEmail(aItem, aAchados, lIa, oCrit)
+	oMsg:cFrom    := __SMTP_FROM
+	oMsg:cTo      := cPara
+	oMsg:cSubject := cAssunto
+	oMsg:cBody    := cCorpo
+	oMsg:MsgBodyType("text/html")
 
 	nErro := oMsg:Send(oServer)
 	oServer:SMTPDisconnect()
 
 	If nErro != 0
-		fLog("ERROR", "  SMTP - falha no envio: " + oServer:GetErrorString(nErro))
+		fLog("ERROR", "  SMTP - falha no envio para " + cPara + ": " + oServer:GetErrorString(nErro))
 		Return .F.
 	EndIf
 
-	fLog("INFO", "  e-mail enviado para " + __MAIL_TO)
+	fLog("INFO", "  e-mail enviado para " + cPara)
 
 Return .T.
 
+/*/{Protheus.doc} mailMEDALTC
+Envia um e-mail de teste pela conta do alerta (__SMTP_*), sem consultar B71 nem gravar Z_NOTIENCA.
+Confere o que o U_chkMEDALTC nao cobre: aceite do remetente e dos destinatarios pelo servidor e a
+chegada na caixa (spam, acentos, tabela HTML).
+Uso: U_mailMEDALTC() envia para __MAIL_TO; U_mailMEDALTC("a@oestesaude.com.br;b@...") para outros
+@type function
+@param cPara, character, opcional; destinatarios separados por ";" (vazio = __MAIL_TO)
+@return logical, .T. se o servidor SMTP aceitou a mensagem
+/*/
+User Function mailMEDALTC(cPara)
+
+	Local lAbriu  := .F.
+	Local lOk     := .F.
+	Local cHtml   := ""
+	Local bErrOld := Nil
+	Local oErro   := Nil
+
+	Default cPara := ""
+
+	If Select("SX2") <= 0
+		RpcSetType(3)
+		RpcSetEnv("01", "01", , , "PLS")
+		lAbriu := .T.
+	EndIf
+
+	cPara := IIf(Empty(AllTrim(cPara)), fMailTo(), AllTrim(cPara))
+	fLog("INFO", "=== Teste de e-mail " + __JOB_NAME + ": " + __SMTP_USER + " (" + __SMTP_HOST + ":" +;
+		cValToChar(__SMTP_PORTA) + ") -> " + cPara + " ===")
+
+	bErrOld := ErrorBlock({|e| Break(e)})
+	BEGIN SEQUENCE
+		If Empty(cPara)
+			fLog("ERROR", "__MAIL_TO sem destinatario.")
+		Else
+			// Acentos vindos do banco passam por fHtml, como no alerta
+			cHtml := '<html><body style="font-family:Arial,sans-serif;font-size:13px">' +;
+				"<p>Teste de envio do job " + __JOB_NAME + " (ambiente " + fHtml(AllTrim(GetEnvServer())) + ", " +;
+				DToC(Date()) + " " + Time() + ").</p>" +;
+				'<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">' +;
+				"<tr><th>Campo</th><th>Valor</th></tr>" +;
+				"<tr><td>Acentos (texto do banco)</td><td>" + fHtml("Benefici" + Chr(225) + "rio Jo" + Chr(227) + "o Concei" + Chr(231) + Chr(227) + "o") + "</td></tr>" +;
+				"<tr><td>Destinat&aacute;rios</td><td>" + fHtml(cPara) + "</td></tr>" +;
+				"</table>" +;
+				'<p style="color:#888">Mensagem autom&aacute;tica - n&atilde;o responder.</p></body></html>'
+			lOk := fEnviaMsg(cPara, "[Alto custo] Teste de envio - " + AllTrim(GetEnvServer()), cHtml)
+		EndIf
+	RECOVER USING oErro
+		fLog("ERROR", "Teste de e-mail interrompido: " + IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
+	END SEQUENCE
+	ErrorBlock(bErrOld)
+
+	fLog(IIf(lOk, "INFO", "ERROR"), "=== Teste de e-mail " + IIf(lOk, "OK: conferir a caixa (e o spam) de " + cPara, "COM FALHA") + " ===")
+
+	If lAbriu
+		RpcClearEnv()
+	EndIf
+
+Return lOk
+
 /*/{Protheus.doc} fSmtpConecta
-Conecta (e autentica, se MV_RELAUTH) no SMTP padrao do Protheus.
+Conecta (e autentica, se __SMTP_AUTH) no SMTP do alerta (__SMTP_HOST:__SMTP_PORTA).
 @type function
 @param oServer, object, (por referencia) TMailManager conectado; o chamador faz SMTPDisconnect()
 @return logical, .T. se conectou
 /*/
 Static Function fSmtpConecta(oServer)
 
-	Local cServer := AllTrim(SuperGetMV("MV_RELSERV", .F., ""))
-	Local cConta  := AllTrim(SuperGetMV("MV_RELACNT", .F., ""))
-	Local cSenha  := AllTrim(SuperGetMV("MV_RELPSW", .F., ""))
-	Local nPorta  := 25
-	Local nErro   := 0
-
-	If Empty(cServer)
-		fLog("ERROR", "  MV_RELSERV (servidor SMTP) nao configurado; e-mail nao enviado")
-		Return .F.
-	EndIf
-
-	If ":" $ cServer
-		nPorta  := Val(SubStr(cServer, At(":", cServer) + 1))
-		cServer := Left(cServer, At(":", cServer) - 1)
-	EndIf
+	Local nErro := 0
 
 	oServer := TMailManager():New()
-	oServer:SetUseSSL(fMvLogico("MV_RELSSL"))
-	oServer:SetUseTLS(fMvLogico("MV_RELTLS"))
-	oServer:Init("", cServer, cConta, cSenha, 0, nPorta)
+	oServer:SetUseSSL(__SMTP_SSL)
+	oServer:SetUseTLS(__SMTP_TLS)
+	oServer:Init("", __SMTP_HOST, __SMTP_USER, __SMTP_SENHA, 0, __SMTP_PORTA)
 	oServer:SetSMTPTimeout(60)
 
 	nErro := oServer:SMTPConnect()
 	If nErro != 0
-		fLog("ERROR", "  SMTP " + cServer + ":" + cValToChar(nPorta) + " - falha na conexao: " + oServer:GetErrorString(nErro))
+		fLog("ERROR", "  SMTP " + __SMTP_HOST + ":" + cValToChar(__SMTP_PORTA) + " - falha na conexao: " + oServer:GetErrorString(nErro))
 		Return .F.
 	EndIf
 
-	If fMvLogico("MV_RELAUTH")
-		nErro := oServer:SmtpAuth(cConta, cSenha)
+	If __SMTP_AUTH
+		nErro := oServer:SmtpAuth(__SMTP_USER, __SMTP_SENHA)
 		If nErro != 0
 			fLog("ERROR", "  SMTP - falha na autenticacao: " + oServer:GetErrorString(nErro))
 			oServer:SMTPDisconnect()
@@ -949,9 +1034,13 @@ Static Function fCorpoEmail(aItem, aAchados, lIa, oCrit)
 	cHtml += "<p>O job OSMEDALTC identificou item(ns) de alto custo na guia" + IIf(lIa, " ou em seus anexos", "") + ".</p>"
 
 	cHtml += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">'
-	cHtml += "<tr><td><b>Guia</b></td><td>" + fHtml(aItem[__I_NUMGUI]) + "</td></tr>"
-	cHtml += "<tr><td><b>Tipo da guia (B53)</b></td><td>" + fHtml(aItem[__I_TIPO]) +;
-		" (itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")</td></tr>"
+	cHtml += "<tr><td><b>Benefici&aacute;rio</b></td><td>" + fHtml(IIf(Empty(aItem[__I_BENEF]), __VLR_ND, aItem[__I_BENEF])) + "</td></tr>"
+	cHtml += "<tr><td><b>N&uacute;mero da guia</b></td><td>" + fHtml(aItem[__I_NUMGUI]) + "</td></tr>"
+	cHtml += "<tr><td><b>Tipo da guia</b></td><td>" + fHtml(fTipoExtenso(aItem[__I_TIPO])) +;
+		' <span style="font-size:11px;color:#555">(B53_TIPO ' + fHtml(aItem[__I_TIPO]) +;
+		", itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")</span></td></tr>"
+	cHtml += "<tr><td><b>Data da solicita&ccedil;&atilde;o</b></td><td>" +;
+		IIf(Empty(aItem[__I_DATENT]), __VLR_ND, DToC(SToD(aItem[__I_DATENT]))) + "</td></tr>"
 	cHtml += "<tr><td><b>Origem</b></td><td>" + fHtml(aItem[__I_ALIMOV]) + " (recno " + fHtml(aItem[__I_RECMOV]) + ")</td></tr>"
 	cHtml += "<tr><td><b>Movimenta&ccedil;&atilde;o B71</b></td><td>" + cValToChar(aItem[__I_RECNO]) + " - " + DToC(SToD(aItem[__I_DATMOV])) + "</td></tr>"
 	cHtml += "</table>"
@@ -981,7 +1070,7 @@ Static Function fCorpoEmail(aItem, aAchados, lIa, oCrit)
 		" Qtd e valor na guia: soma de quantidade solicitada x valor unit&aacute;rio dos itens da guia com o mesmo c&oacute;digo." +;
 		" Valor de tabela: BD4 na vig&ecirc;ncia mais recente at&eacute; " + DToC(Date()) + "," +;
 		" uma linha por tabela de pre&ccedil;o (" + __TAB_ALIAS + ") e unidade." +;
-		" Vig&ecirc;ncia: pelo BD4_VIGFIM (encerrada = fim antes de hoje, em cinza; o valor continua listado). &quot;" + __VLR_ND +;
+		" S&oacute; tabelas vigentes (BD4_VIGFIM vazio ou a partir de hoje). &quot;" + __VLR_ND +;
 		"&quot;: valor n&atilde;o dispon&iacute;vel no dicion&aacute;rio.</p>"
 	If lIa
 		cHtml += '<p style="font-size:11px;color:#555">Anexo (IA): medicamento citado no anexo e n&atilde;o lan&ccedil;ado na guia' +;
@@ -995,11 +1084,32 @@ Static Function fCorpoEmail(aItem, aAchados, lIa, oCrit)
 Return cHtml
 
 /*/{Protheus.doc} fHtml
+Escapa o texto para o corpo do e-mail. Caracteres acima de 127 viram entidade numerica (&#NNN;) para
+o HTML sair so em ASCII e os acentos do banco (ISO-8859-1/CP1252) aparecerem certos em qualquer
+cliente, sem depender do charset declarado pelo TMailMessage. Controles C1 (128-159) viram espaco.
 @type function
-@return character, texto com &, < e > escapados para HTML
+@return character, texto com &, <, > e nao-ASCII escapados para HTML
 /*/
 Static Function fHtml(cTexto)
-Return StrTran(StrTran(StrTran(cValToChar(cTexto), "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+
+	Local cIn  := StrTran(StrTran(StrTran(cValToChar(cTexto), "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+	Local cRet := ""
+	Local nAsc := 0
+	Local nI   := 0
+
+	For nI := 1 To Len(cIn)
+		nAsc := Asc(SubStr(cIn, nI, 1))
+		Do Case
+		Case nAsc < 128
+			cRet += SubStr(cIn, nI, 1)
+		Case nAsc < 160
+			cRet += " "
+		Otherwise
+			cRet += "&#" + cValToChar(nAsc) + ";"
+		EndCase
+	Next nI
+
+Return cRet
 
 /*/{Protheus.doc} fVlrTabHtml
 Celula "Valor de tabela" do e-mail: mini-tabela com uma linha por tabela de preco + unidade.
@@ -1021,8 +1131,7 @@ Static Function fVlrTabHtml(xVlr)
 		"<tr><th>Valor</th><th>Tabela</th><th>Descri&ccedil;&atilde;o</th><th>Tp.Pad</th><th>Unid.</th><th>Vig&ecirc;ncia</th></tr>"
 	For nI := 1 To Len(xVlr)
 		aLin := xVlr[nI]
-		// Linha com vigencia encerrada em cinza
-		cHtml += IIf(fVigEncerr(aLin[__L_VIGFIM]), '<tr style="color:#999">', "<tr>") +;
+		cHtml += "<tr>" +;
 			'<td style="text-align:right;white-space:nowrap">' + fHtml(fMoeda(aLin[__L_VALOR])) + "</td>" +;
 			"<td>" + fHtml(aLin[__L_CODTAB]) + "</td>" +;
 			"<td>" + fHtml(aLin[__L_DESCRI]) + "</td>" +;
@@ -1052,8 +1161,7 @@ Static Function fVlrTabTxt(xVlr)
 	For nI := 1 To Len(xVlr)
 		aLin := xVlr[nI]
 		cRet += IIf(nI > 1, " / ", "") + fMoeda(aLin[__L_VALOR]) + " (" + aLin[__L_CODTAB] +;
-			IIf(Empty(aLin[__L_DESCRI]), "", " " + aLin[__L_DESCRI]) + " " + aLin[__L_UNID] +;
-			IIf(fVigEncerr(aLin[__L_VIGFIM]), " ENCERRADA " + DToC(SToD(aLin[__L_VIGFIM])), "") + ")"
+			IIf(Empty(aLin[__L_DESCRI]), "", " " + aLin[__L_DESCRI]) + " " + aLin[__L_UNID] + ")"
 	Next nI
 
 Return cRet
@@ -1069,29 +1177,16 @@ Return !Empty(cVigFim) .And. cVigFim < DToS(Date())
 /*/{Protheus.doc} fVigTxt
 @type function
 @param cVigFim, character, BD4_VIGFIM (AAAAMMDD) ou vazio
-@return character, coluna Vigencia do e-mail: "Vigente (sem fim)", "Vigente ate DD/MM/AAAA" ou
-	"Encerrada em DD/MM/AAAA"
+@return character, coluna Vigencia do e-mail: "Vigente (sem fim)" ou "Vigente ate DD/MM/AAAA"
+	(as encerradas ja ficam fora em fCarregaVlrTab)
 /*/
 Static Function fVigTxt(cVigFim)
 
-	Do Case
-	Case Empty(cVigFim)
+	If Empty(cVigFim)
 		Return "Vigente (sem fim)"
-	Case fVigEncerr(cVigFim)
-		Return "Encerrada em " + DToC(SToD(cVigFim))
-	EndCase
+	EndIf
 
 Return "Vigente ate " + DToC(SToD(cVigFim))
-
-/*/{Protheus.doc} fMvLogico
-@type function
-@return logical, valor do parametro SX6 logico (.F. se nao existir)
-/*/
-Static Function fMvLogico(cPar)
-
-	Local xValor := SuperGetMV(cPar, .F., .F.)
-
-Return ValType(xValor) == "L" .And. xValor
 
 /*/{Protheus.doc} fGravaWatermark
 Grava em Z_NOTIENCA o R_E_C_N_O_ da B71 verificada. So e chamada em ordem crescente de recno.
@@ -1108,11 +1203,11 @@ Return
 Verifica cada anexo da B71 na API e guarda o resultado em aItem[__I_TEXTOS].
 Anexo com erro definitivo (nao existe no SFTP, extensao nao suportada) e descartado.
 @type function
-@param aMedApi, array, lista de medicamentos enviada a API (fMedApi)
+@param aLista, array, {aMed, cListaId} da execucao (fEnviaLista)
 @return logical, .F. se houve falha temporaria (API/SFTP/IA fora, timeout, token); a B71
 	nao deve ser dada como verificada
 /*/
-Static Function fProcessaB71(aItem, aMedApi)
+Static Function fProcessaB71(aItem, aLista)
 
 	Local aRes    := {}
 	Local cObjeto := ""
@@ -1131,12 +1226,13 @@ Static Function fProcessaB71(aItem, aMedApi)
 	For nI := 1 To Len(aItem[__I_ANEXOS])
 		cObjeto := aItem[__I_ANEXOS][nI][__A_OBJETO]
 		nInicio := Seconds()
-		aRes    := fExtraiTexto(cObjeto, aMedApi, aItem[__I_PESSOAS])
+		aRes    := fExtraiTexto(cObjeto, aLista, aItem[__I_PESSOAS])
 
 		Do Case
 		Case aRes[__R_OK]
 			aAdd(aItem[__I_TEXTOS], {cObjeto, aRes[__R_METODO], aRes[__R_ACHADOS], aRes[__R_AVISOS]})
-			fLog("INFO", "  " + cObjeto + ": texto via " + aRes[__R_METODO] + ", IA " + aRes[__R_MODELO] + " em " +;
+			fLog("INFO", "  " + cObjeto + ": texto via " + aRes[__R_METODO] + ", " + cValToChar(aRes[__R_CANDID]) +;
+				" candidato(s) da pre-busca, " + IIf(aRes[__R_CANDID] > 0, "IA " + aRes[__R_MODELO], "IA nao chamada") + " em " +;
 				cValToChar(Round(Seconds() - nInicio, 1)) + "s, " + cValToChar(Len(aRes[__R_ACHADOS])) + " achado(s)")
 		Case aRes[__R_DEFINIT]
 			fLog("WARN", "  " + cObjeto + ": descartado (" + aRes[__R_ERRO] + ")")
@@ -1149,21 +1245,119 @@ Static Function fProcessaB71(aItem, aMedApi)
 Return .T.
 
 /*/{Protheus.doc} fExtraiTexto
-Pede a API a verificacao de um anexo: POST em __API_URL com {arquivo: ACB_OBJETO, ambiente: GetEnvServer(),
-medicamentos, mascarar}. A API baixa o arquivo do SFTP do ambiente (prod ou dev), extrai o texto e
-pede ao Claude os medicamentos da lista citados. O texto nao volta para o Protheus.
-Devolve {ok, metodo, modelo, achados, avisos} ou {ok:false, erro} (inclusive "IA indisponivel: ...").
+Verifica um anexo na API (fPostVerif). Envia a lista de medicamentos antes, se ainda nao foi enviada
+nesta execucao, e a reenvia uma vez quando a API responde __LST_DESC (API reiniciada).
 @type function
 @param cArquivo, character, ACB_OBJETO (so o nome, sem pasta)
-@param aMedApi, array, lista de medicamentos (fMedApi); a API recusa lista vazia
+@param aLista, array, {aMed, cListaId}; cListaId e preenchido por fEnviaLista
 @param aMascarar, array, opcional; nomes e matricula da guia (fPessoas) que a API mascara antes do Claude
-@return array, {lOk, cMetodo, cErro, lDefinitivo, aAchados, aAvisos, cModelo}. lDefinitivo indica
+@return array, ver fPostVerif
+/*/
+Static Function fExtraiTexto(cArquivo, aLista, aMascarar)
+
+	Local aRet  := {}
+	Local cErro := ""
+
+	If Empty(aLista[__LS_ID]) .And. !fEnviaLista(aLista, @cErro)
+		aRet := {.F., "", "", .F., {}, {}, "", 0}
+		aRet[__R_ERRO] := "POST " + __LST_PATH + ": " + cErro
+		Return aRet
+	EndIf
+
+	aRet := fPostVerif(cArquivo, aLista[__LS_ID], aMascarar)
+	If !aRet[__R_OK] .And. __LST_DESC $ aRet[__R_ERRO]
+		fLog("WARN", "  API sem a lista de medicamentos (reiniciada?): reenviando")
+		If !fEnviaLista(aLista, @cErro)
+			aRet[__R_ERRO] := "reenvio da lista (POST " + __LST_PATH + "): " + cErro
+			Return aRet
+		EndIf
+		aRet := fPostVerif(cArquivo, aLista[__LS_ID], aMascarar)
+	EndIf
+
+Return aRet
+
+/*/{Protheus.doc} fEnviaLista
+Envia a lista completa de medicamentos a API (POST __LST_PATH, {medicamentos: fMedApi()}) e guarda o
+listaId devolvido. A API monta o indice da pre-busca e guarda a lista em memoria; a mesma lista devolve
+o mesmo listaId.
+@type function
+@param aLista, array, {aMed, cListaId}; recebe o cListaId
+@param cErro, character, (por referencia) motivo da falha
+@return logical, .T. se a API aceitou a lista
+/*/
+Static Function fEnviaLista(aLista, cErro)
+
+	Local oRest   := Nil
+	Local oBody   := JsonObject():New()
+	Local oResp   := JsonObject():New()
+	Local aHeader := {}
+	Local cHost   := ""
+	Local cPath   := ""
+	Local cResp   := ""
+	Local nInicio := Seconds()
+
+	cErro := ""
+	aLista[__LS_ID] := ""
+
+	fSplitUrl(fApiBase() + __LST_PATH, @cHost, @cPath)
+	oBody["medicamentos"] := fMedApi(aLista[__LS_MEDS])
+
+	aAdd(aHeader, "Content-Type: application/json")
+	aAdd(aHeader, "Authorization: Bearer " + AllTrim(__API_TOKEN))
+
+	oRest := FWRest():New(cHost)
+	oRest:SetPath(cPath)
+	oRest:SetPostParams(oBody:ToJson())
+	oRest:SetTimeOut(__API_TIMEOUT)
+	oRest:Post(aHeader)
+
+	cResp := oRest:GetResult()
+	Do Case
+	Case Empty(cResp)
+		cErro := "sem resposta da API (" + AllTrim(cValToChar(oRest:GetLastError())) + ")"
+	Case ValType(oResp:FromJson(cResp)) == "C"
+		cErro := "resposta invalida da API: " + Left(cResp, 200)
+	Case ValType(oResp["listaId"]) == "C" .And. !Empty(oResp["listaId"])
+		aLista[__LS_ID] := oResp["listaId"]
+	Case "Cannot POST" $ cResp
+		cErro := "API sem o " + __LST_PATH + ": atualizar a API"
+	Case ValType(oResp["erro"]) == "C"
+		cErro := fDecUtf8(oResp["erro"])
+	Case ValType(oResp["message"]) == "C"
+		cErro := fDecUtf8(oResp["message"])
+	Otherwise
+		cErro := "resposta sem listaId: " + Left(cResp, 200)
+	EndCase
+
+	If !Empty(cErro)
+		Return .F.
+	EndIf
+
+	fLog("INFO", "Lista de medicamentos enviada a API: " + cValToChar(oResp["itens"]) + " item(ns), " +;
+		cValToChar(oResp["palavras"]) + " palavra(s)-chave da pre-busca em " + cValToChar(Round(Seconds() - nInicio, 1)) + "s")
+	If ValType(oResp["semPalavra"]) == "N" .And. oResp["semPalavra"] > 0
+		fLog("WARN", "  " + cValToChar(oResp["semPalavra"]) + " medicamento(s) sem palavra-chave (descricao so com unidade/forma):" +;
+			" a pre-busca nao os acha nos anexos, ficam so pelos procedimentos da guia")
+	EndIf
+
+Return .T.
+
+/*/{Protheus.doc} fPostVerif
+Pede a API a verificacao de um anexo: POST em __API_URL com {arquivo: ACB_OBJETO, ambiente: GetEnvServer(),
+listaId, mascarar}. A API baixa o arquivo do SFTP do ambiente (prod ou dev), extrai o texto, faz a
+pre-busca da lista no texto e pede ao Claude os candidatos citados. O texto nao volta para o Protheus.
+Devolve {ok, metodo, modelo, candidatos, achados, avisos} ou {ok:false, erro} (inclusive "IA indisponivel: ...").
+@type function
+@param cArquivo, character, ACB_OBJETO (so o nome, sem pasta)
+@param cListaId, character, listaId devolvido por fEnviaLista
+@param aMascarar, array, opcional; nomes e matricula da guia (fPessoas) que a API mascara antes do Claude
+@return array, {lOk, cMetodo, cErro, lDefinitivo, aAchados, aAvisos, cModelo, nCandidatos}. lDefinitivo indica
 	erro que nao muda numa nova tentativa (arquivo inexistente, extensao/nome invalidos); aAchados
 	(fLeAchados) e aAvisos (fLeAvisos)
 /*/
-Static Function fExtraiTexto(cArquivo, aMedApi, aMascarar)
+Static Function fPostVerif(cArquivo, cListaId, aMascarar)
 
-	Local aRet    := {.F., "", "", .F., {}, {}, ""}
+	Local aRet    := {.F., "", "", .F., {}, {}, "", 0}
 	Local oRest   := Nil
 	Local oBody   := JsonObject():New()
 	Local oResp   := JsonObject():New()
@@ -1175,14 +1369,13 @@ Static Function fExtraiTexto(cArquivo, aMedApi, aMascarar)
 	Local cErro   := ""
 	Local xErro   := Nil
 
-	Default aMedApi   := {}
 	Default aMascarar := {}
 
 	fSplitUrl(__API_URL, @cHost, @cPath)
 
-	oBody["arquivo"]      := EncodeUTF8(cArquivo)
-	oBody["ambiente"]     := AllTrim(GetEnvServer())
-	oBody["medicamentos"] := aMedApi
+	oBody["arquivo"]  := EncodeUTF8(cArquivo)
+	oBody["ambiente"] := AllTrim(GetEnvServer())
+	oBody["listaId"]  := cListaId
 	If Len(aMascarar) > 0
 		aEval(aMascarar, {|x| aAdd(aPessoa, EncodeUTF8(x))})
 		oBody["mascarar"] := aPessoa
@@ -1212,6 +1405,7 @@ Static Function fExtraiTexto(cArquivo, aMedApi, aMascarar)
 		aRet[__R_OK]      := .T.
 		aRet[__R_METODO]  := cValToChar(oResp["metodo"])
 		aRet[__R_MODELO]  := cValToChar(oResp["modelo"])
+		aRet[__R_CANDID]  := IIf(ValType(oResp["candidatos"]) == "N", oResp["candidatos"], 0)
 		aRet[__R_ACHADOS] := fLeAchados(oResp["achados"])
 		aRet[__R_AVISOS]  := fLeAvisos(oResp["avisos"])
 		Return aRet
@@ -1293,7 +1487,7 @@ Static Function fLeAvisos(aLista)
 Return aRet
 
 /*/{Protheus.doc} fMedApi
-Monta, uma vez por execucao, a lista de medicamentos enviada a API (LISTA do prompt da IA).
+Monta a lista de medicamentos enviada a API no POST __LST_PATH (fEnviaLista), base da pre-busca nos anexos.
 @type function
 @param aMed, array, medicamentos de fCarregaMed()
 @return array, { JsonObject {codigo, descricao, termos[]}, ... }; termos ja normalizados (fAddTermo)
@@ -1409,15 +1603,15 @@ Return aMed
 
 /*/{Protheus.doc} fCarregaVlrTab
 Preenche o valor de tabela de cada medicamento: BA8 (BA8_CODTAB) -> BD4 na vigencia mais recente,
-isto e, o maior BD4_VIGINI <= hoje para cada tabela + unidade (BD4_CODIGO). BD4_VIGFIM nao e considerado
-e vigencias futuras ficam de fora.
+isto e, o maior BD4_VIGINI <= hoje para cada tabela + unidade (BD4_CODIGO); vigencias futuras ficam de
+fora. Linhas com BD4_VIGFIM antes de hoje (encerradas) nao entram no valor de tabela.
 Um medicamento pode ter mais de uma tabela/unidade: uma linha por tabela + unidade, com a descricao e o
 Tp.Pad.Saude do cadastro de tabelas (__TAB_ALIAS), mostradas no e-mail em uma mini-tabela (fVlrTabHtml).
 Sem os campos do valor no dicionario, o valor fica __VLR_ND e o job segue; sem os do cadastro de tabelas,
 as linhas saem so com o codigo.
 @type function
 @param aMed, array, medicamentos de fCarregaMed() (alterado por referencia): __M_VLRTAB recebe
-	{ {nValor, cCodTab, cDescri, cCodPad, cUnid}, ... } (posicoes __L_*) ou "sem valor na tabela"
+	{ {nValor, cCodTab, cDescri, cCodPad, cUnid, cVigFim}, ... } (posicoes __L_*) ou "sem valor em tabela vigente"
 @param cFiltro, character, filtro do criterio na BR8 (fSqlFiltroBr8), o mesmo de fCarregaMed()
 /*/
 Static Function fCarregaVlrTab(aMed, cFiltro)
@@ -1430,6 +1624,7 @@ Static Function fCarregaVlrTab(aMed, cFiltro)
 	Local cTabJoi := ""
 	Local cVigSel := ", ' ' AS VIGFIM"
 	Local xVigFim := Nil
+	Local cVigFim := ""
 	Local oPos    := JsonObject():New()
 	Local nPos    := 0
 	Local nI      := 0
@@ -1449,7 +1644,7 @@ Static Function fCarregaVlrTab(aMed, cFiltro)
 		fLog("WARN", "Descricao das tabelas de preco indisponivel: " + cFalta + " nao existe no dicionario. E-mail sai so com o codigo.")
 	EndIf
 
-	// So informativo (coluna Vigencia do e-mail): a escolha da linha vigente (fSqlBd4Vig) nao usa o BD4_VIGFIM
+	// Coluna Vigencia do e-mail e filtro das encerradas (fVigEncerr); a escolha da linha (fSqlBd4Vig) e o criterio nao usam o BD4_VIGFIM
 	If fCamposOk("BD4", {"BD4_VIGFIM"}, @cFalta)
 		cVigSel := ", BD4.BD4_VIGFIM AS VIGFIM"
 	EndIf
@@ -1487,9 +1682,12 @@ Static Function fCarregaVlrTab(aMed, cFiltro)
 		nPos := oPos[AllTrim((cAlias)->BR8_CODPSA)]
 		If ValType(nPos) == "N"
 			xVigFim := (cAlias)->VIGFIM
-			aAdd(aMed[nPos][__M_VLRTAB], {(cAlias)->BD4_VALREF, AllTrim((cAlias)->BD4_CODTAB), AllTrim((cAlias)->TABDESC),;
-				AllTrim((cAlias)->TABPAD), AllTrim((cAlias)->BD4_CODIGO),;
-				IIf(ValType(xVigFim) == "D", DToS(xVigFim), AllTrim(cValToChar(xVigFim)))})
+			cVigFim := IIf(ValType(xVigFim) == "D", DToS(xVigFim), AllTrim(cValToChar(xVigFim)))
+			// So tabelas vigentes no e-mail e no log
+			If !fVigEncerr(cVigFim)
+				aAdd(aMed[nPos][__M_VLRTAB], {(cAlias)->BD4_VALREF, AllTrim((cAlias)->BD4_CODTAB), AllTrim((cAlias)->TABDESC),;
+					AllTrim((cAlias)->TABPAD), AllTrim((cAlias)->BD4_CODIGO), cVigFim})
+			EndIf
 		EndIf
 		(cAlias)->(DbSkip())
 	EndDo
@@ -1498,7 +1696,7 @@ Static Function fCarregaVlrTab(aMed, cFiltro)
 
 	For nI := 1 To Len(aMed)
 		If Empty(aMed[nI][__M_VLRTAB])
-			aMed[nI][__M_VLRTAB] := "sem valor na tabela"
+			aMed[nI][__M_VLRTAB] := "sem valor em tabela vigente"
 		EndIf
 	Next nI
 
@@ -1917,7 +2115,7 @@ B71 da BEA: guarda a chave da BEA do registro do B71_RECMOV (itens da BE2) e, co
 usa essa chave como numero da guia.
 @type function
 @return array, item {nRecno, cAliMov, cRecMov, cNumGui, aAnexos, cStatus, aTextos, cDatMov, aPessoas,
-	cTipo, cB53Gui, cChvBea}
+	cTipo, cB53Gui, cChvBea, cBenef, cDatEnt}
 /*/
 Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 
@@ -1940,6 +2138,8 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 	aItem[__I_TIPO]   := ""
 	aItem[__I_B53GUI] := ""
 	aItem[__I_CHVBEA] := ""
+	aItem[__I_BENEF]  := ""
+	aItem[__I_DATENT] := ""
 
 	If Empty(cCampo)
 		aItem[__I_STATUS] := __ST_ALIAS
@@ -1950,6 +2150,10 @@ Static Function fMontaB71(nRecno, cAliMov, cRecMov, cDatMov)
 		aItem[__I_STATUS] := __ST_ORIGEM
 		Return aItem
 	EndIf
+
+	// Para o e-mail, com ou sem anexo e com a IA ligada ou nao
+	aItem[__I_BENEF]  := fNomeBenef(cAliMov)
+	aItem[__I_DATENT] := fDataEntrada(cAliMov)
 
 	nPosCpo := (cAliMov)->(FieldPos(cCampo))
 	If nPosCpo == 0
@@ -2054,7 +2258,8 @@ Return aRet
 /*/{Protheus.doc} fPessoas
 Dados pessoais da guia que a API mascara antes de enviar o texto ao Claude: nomes da tabela origem
 (__CPO_NOMES), matricula do beneficiario (__CPO_MATRIC) e, sem nome do beneficiario na origem, o
-BA1_NOMUSR da matricula. Campo ausente no dicionario e ignorado. Nao vai para o log nem para o e-mail.
+BA1_NOMUSR da matricula. Campo ausente no dicionario e ignorado. Nao vai para o log; o nome do
+beneficiario vai no e-mail por fNomeBenef().
 @type function
 @param cAliMov, character, tabela origem, ja posicionada por fPosOrigem()
 @return array, { cNomeOuMatricula, ... }
@@ -2063,14 +2268,9 @@ Static Function fPessoas(cAliMov)
 
 	Local aRet     := {}
 	Local aNomes   := __CPO_NOMES
-	Local aMatric  := __CPO_MATRIC
 	Local aPartes  := {}
 	Local cValor   := ""
-	Local cQuery   := ""
-	Local cAlias   := ""
-	Local cFalta   := ""
 	Local lNomUsr  := .F.
-	Local oErro    := Nil
 	Local nPos     := 0
 	Local nI       := 0
 
@@ -2085,24 +2285,69 @@ Static Function fPessoas(cAliMov)
 		EndIf
 	Next nI
 
+	aPartes := fMatricula(cAliMov)
+	If Len(aPartes) == 0
+		Return aRet
+	EndIf
+	cValor := ""
+	aEval(aPartes, {|x| cValor += x})
+	aAdd(aRet, cValor)
+
+	If !lNomUsr
+		cValor := fNomeBa1(aPartes)
+		If !Empty(cValor)
+			aAdd(aRet, cValor)
+		EndIf
+	EndIf
+
+Return aRet
+
+/*/{Protheus.doc} fMatricula
+Matricula do beneficiario na tabela origem (__CPO_MATRIC), na ordem da chave da BA1.
+@type function
+@param cAliMov, character, tabela origem, ja posicionada por fPosOrigem()
+@return array, { cOpeUsr, cCodEmp, cMatric, cTipReg, cDigito }, ou {} se faltar campo no dicionario
+	ou a matricula nao tiver ao menos 8 digitos
+/*/
+Static Function fMatricula(cAliMov)
+
+	Local aMatric := __CPO_MATRIC
+	Local aPartes := {}
+	Local cValor  := ""
+	Local nPos    := 0
+	Local nI      := 0
+
 	For nI := 1 To Len(aMatric)
 		nPos := (cAliMov)->(FieldPos(cAliMov + aMatric[nI]))
 		If nPos == 0
-			aPartes := {}
-			Exit
+			Return {}
 		EndIf
 		aAdd(aPartes, AllTrim(cValToChar((cAliMov)->(FieldGet(nPos)))))
 	Next nI
 
-	cValor := ""
 	aEval(aPartes, {|x| cValor += x})
-	If Len(aPartes) != Len(aMatric) .Or. Len(cValor) < 8 .Or. !fSoDigitos(cValor)
-		Return aRet
+	If Len(cValor) < 8 .Or. !fSoDigitos(cValor)
+		Return {}
 	EndIf
-	aAdd(aRet, cValor)
 
-	If lNomUsr .Or. !fCamposOk("BA1", {"BA1_CODINT", "BA1_CODEMP", "BA1_MATRIC", "BA1_TIPREG", "BA1_DIGITO", "BA1_NOMUSR"}, @cFalta)
-		Return aRet
+Return aPartes
+
+/*/{Protheus.doc} fNomeBa1
+@type function
+@param aPartes, array, matricula de fMatricula()
+@return character, BA1_NOMUSR da matricula, ou "" se nao encontrado ou BA1 sem os campos no dicionario
+/*/
+Static Function fNomeBa1(aPartes)
+
+	Local cNome  := ""
+	Local cQuery := ""
+	Local cAlias := ""
+	Local cFalta := ""
+	Local oErro  := Nil
+
+	If Len(aPartes) != Len(__CPO_MATRIC) .Or.;
+		!fCamposOk("BA1", {"BA1_CODINT", "BA1_CODEMP", "BA1_MATRIC", "BA1_TIPREG", "BA1_DIGITO", "BA1_NOMUSR"}, @cFalta)
+		Return ""
 	EndIf
 
 	BEGIN SEQUENCE
@@ -2115,16 +2360,93 @@ Static Function fPessoas(cAliMov)
 			" AND BA1_DIGITO = '" + fSqlStr(aPartes[5]) + "'" +;
 			" AND D_E_L_E_T_ = ' '"
 		cAlias := MPSysOpenQuery(ChangeQuery(cQuery))
-		If !(cAlias)->(Eof()) .And. !Empty((cAlias)->BA1_NOMUSR)
-			aAdd(aRet, AllTrim((cAlias)->BA1_NOMUSR))
+		If !(cAlias)->(Eof())
+			cNome := AllTrim((cAlias)->BA1_NOMUSR)
 		EndIf
 		(cAlias)->(DbCloseArea())
 	RECOVER USING oErro
-		fLog("WARN", "  nome do beneficiario (BA1) nao apurado para o mascaramento: " +;
+		fLog("WARN", "  nome do beneficiario (BA1) nao apurado: " +;
 			IIf(ValType(oErro) == "O", oErro:Description, "erro desconhecido"))
 	END SEQUENCE
 
-Return aRet
+Return cNome
+
+/*/{Protheus.doc} fNomeBenef
+Nome do beneficiario para o e-mail: <alias>_NOMUSR da tabela origem ou, vazio/sem o campo, o
+BA1_NOMUSR da matricula. Nao vai para o log.
+@type function
+@param cAliMov, character, tabela origem, ja posicionada por fPosOrigem()
+@return character, nome, ou "" se nao apurado
+/*/
+Static Function fNomeBenef(cAliMov)
+
+	Local nPos  := (cAliMov)->(FieldPos(cAliMov + "_NOMUSR"))
+	Local cNome := ""
+
+	If nPos > 0
+		cNome := AllTrim(cValToChar((cAliMov)->(FieldGet(nPos))))
+	EndIf
+
+	If Empty(cNome)
+		cNome := fNomeBa1(fMatricula(cAliMov))
+	EndIf
+
+Return cNome
+
+/*/{Protheus.doc} fDataEntrada
+Data em que a guia entrou no sistema: primeiro campo de __CPO_DATENT (prefixo = alias) que existir
+na tabela origem e estiver preenchido.
+@type function
+@param cAliMov, character, tabela origem, ja posicionada por fPosOrigem()
+@return character, AAAAMMDD, ou "" se nenhum campo existir ou estiver preenchido
+/*/
+Static Function fDataEntrada(cAliMov)
+
+	Local aCampos := __CPO_DATENT
+	Local xValor  := Nil
+	Local cData   := ""
+	Local nPos    := 0
+	Local nI      := 0
+
+	For nI := 1 To Len(aCampos)
+		nPos := (cAliMov)->(FieldPos(cAliMov + aCampos[nI]))
+		If nPos > 0
+			xValor := (cAliMov)->(FieldGet(nPos))
+			cData  := AllTrim(IIf(ValType(xValor) == "D", DToS(xValor), cValToChar(xValor)))
+			If Len(cData) == 8 .And. fSoDigitos(cData)
+				Return cData
+			EndIf
+		EndIf
+	Next nI
+
+Return ""
+
+/*/{Protheus.doc} fTipoExtenso
+Descricao do B53_TIPO pelo combo do dicionario (X3_CBOX no formato "1=Consulta;2=SADT;...").
+@type function
+@param cTipo, character, B53_TIPO
+@return character, descricao, ou o proprio codigo sem combo, com combo por funcao (#) ou codigo fora dele
+/*/
+Static Function fTipoExtenso(cTipo)
+
+	Local xCbox := GetSX3Cache("B53_TIPO", "X3_CBOX")
+	Local aOpc  := {}
+	Local nPos  := 0
+	Local nI    := 0
+
+	If ValType(xCbox) != "C" .Or. Empty(xCbox) .Or. Left(AllTrim(xCbox), 1) == "#"
+		Return cTipo
+	EndIf
+
+	aOpc := StrTokArr(AllTrim(xCbox), ";")
+	For nI := 1 To Len(aOpc)
+		nPos := At("=", aOpc[nI])
+		If nPos > 0 .And. AllTrim(Left(aOpc[nI], nPos - 1)) == AllTrim(cTipo) .And. !Empty(SubStr(aOpc[nI], nPos + 1))
+			Return AllTrim(SubStr(aOpc[nI], nPos + 1))
+		EndIf
+	Next nI
+
+Return cTipo
 
 /*/{Protheus.doc} fCampoGuia
 @type function
@@ -2242,10 +2564,15 @@ Return
 
 /*/{Protheus.doc} fDescTipo
 @type function
-@return character, " (B53_TIPO x, itens z)" para o log
+@return character, " (B53_TIPO x - descricao, itens z, entrada DD/MM/AAAA)" para o log
 /*/
 Static Function fDescTipo(aItem)
-Return fGuiaBea(aItem) + " (B53_TIPO " + aItem[__I_TIPO] + ", itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] + ")"
+
+	Local cExt := fTipoExtenso(aItem[__I_TIPO])
+
+Return fGuiaBea(aItem) + " (B53_TIPO " + aItem[__I_TIPO] + IIf(cExt == aItem[__I_TIPO], "", " - " + cExt) +;
+	", itens " + fCfgProc(aItem[__I_TIPO], aItem[__I_ALIMOV])[__C_ALIAS] +;
+	", entrada " + IIf(Empty(aItem[__I_DATENT]), __VLR_ND, DToC(SToD(aItem[__I_DATENT]))) + ")"
 
 /*/{Protheus.doc} fGuiaBea
 @type function
@@ -2308,7 +2635,12 @@ Static Function fValidaCfg()
 		Return .F.
 	EndIf
 
-	fLog("INFO", "Config: ambiente " + AllTrim(GetEnvServer()) + " | API " + __API_URL + " | e-mail " + __MAIL_TO +;
+	If Empty(fMailTo())
+		fLog("ERROR", "__MAIL_TO sem destinatario.")
+		Return .F.
+	EndIf
+
+	fLog("INFO", "Config: ambiente " + AllTrim(GetEnvServer()) + " | API " + __API_URL + " | e-mail " + fMailTo() +;
 		IIf(Empty(__CODOBJ), "", " | filtro ACB_CODOBJ = " + __CODOBJ))
 
 	If !Empty(__DATA_DBG)
@@ -2316,6 +2648,29 @@ Static Function fValidaCfg()
 	EndIf
 
 Return .T.
+
+/*/{Protheus.doc} fMailTo
+@type function
+@return character, e-mails de __MAIL_TO separados por ";" (sem vazios nem repetidos), ou "" se nenhum
+/*/
+Static Function fMailTo()
+
+	Local aLista  := __MAIL_TO
+	Local aVistos := {}
+	Local cRet    := ""
+	Local cMail   := ""
+	Local nI      := 0
+
+	For nI := 1 To Len(aLista)
+		cMail := AllTrim(aLista[nI])
+		If Empty(cMail) .Or. aScan(aVistos, {|x| Lower(x) == Lower(cMail)}) > 0
+			Loop
+		EndIf
+		aAdd(aVistos, cMail)
+		cRet += IIf(Empty(cRet), "", ";") + cMail
+	Next nI
+
+Return cRet
 
 /*/{Protheus.doc} fApiBase
 @type function

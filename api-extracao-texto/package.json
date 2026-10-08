@@ -13,7 +13,8 @@
     "test:e2e": "node test/e2e/testar-api.js",
     "test:mascara": "node test/testar-mascara.js",
     "test:ia": "node test/testar-ia.js",
-    "test:verificacao": "node test/testar-verificacao.js"
+    "test:verificacao": "node test/testar-verificacao.js",
+    "test:pre-busca": "node test/testar-pre-busca.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

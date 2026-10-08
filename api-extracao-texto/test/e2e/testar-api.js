@@ -22,10 +22,11 @@ const SFTP_AMBIENTE = process.env.SFTP_AMBIENTE_TESTE || 'CYWSXT_DEV';
 const ESPERADO = ['INFLIXIMABE', 'REMICADE'];
 const IA_TESTE = String(process.env.IA_TESTE || '').toLowerCase() === 'true';
 
-// Códigos fictícios; comercial.pdf cita REMICADE (infliximabe) e STELARA (ustequinumabe), não rituximabe
+// Códigos fictícios; comercial.pdf cita REMICADE (infliximabe) e STELARA (ustequinumabe), não rituximabe.
+// O nome comercial precisa estar nos termos (como na BA8_DESCRI): a pré-busca só manda à IA o que acha no texto
 const MEDICAMENTOS_IA = [
-  { codigo: '90000001', descricao: 'INFLIXIMABE 100MG', termos: ['INFLIXIMABE'] },
-  { codigo: '90000002', descricao: 'USTEQUINUMABE 45MG', termos: ['USTEQUINUMABE'] },
+  { codigo: '90000001', descricao: 'INFLIXIMABE 100MG', termos: ['INFLIXIMABE', 'REMICADE'] },
+  { codigo: '90000002', descricao: 'USTEQUINUMABE 45MG', termos: ['USTEQUINUMABE', 'STELARA'] },
   { codigo: '90000003', descricao: 'RITUXIMABE 500MG', termos: ['RITUXIMABE'] },
 ];
 

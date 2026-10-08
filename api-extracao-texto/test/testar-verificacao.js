@@ -4,6 +4,7 @@ require('reflect-metadata');
 const { Logger } = require('@nestjs/common');
 const { classificarIa } = require('../dist/extracao/verificacao/classificacao-ia');
 const { VerificacaoService } = require('../dist/extracao/verificacao/verificacao.service');
+const { ListaMedicamentosService } = require('../dist/extracao/verificacao/lista-medicamentos.service');
 
 Logger.overrideLogger(false);
 
@@ -46,16 +47,23 @@ const AVISO_CORTADO = {
   observacao: 'texto maior que IA_MAX_CHARS: a IA leu so o inicio',
 };
 
+const config = { get: (_nome, padrao) => padrao };
+
 function servico(extraido, ia) {
   const pedidos = [];
-  const extracao = { extrair: async () => extraido, extrairDoSftp: async () => extraido };
+  const extracoes = [];
+  const extracao = {
+    extrair: async () => (extracoes.push(1), extraido),
+    extrairDoSftp: async () => (extracoes.push(1), extraido),
+  };
   const iaFalsa = {
     analisar: async (texto, medicamentos, mascarar) => {
       pedidos.push({ texto, medicamentos, mascarar });
       return ia;
     },
   };
-  return { verificacao: new VerificacaoService(extracao, iaFalsa), pedidos };
+  const listas = new ListaMedicamentosService(config);
+  return { verificacao: new VerificacaoService(extracao, iaFalsa, listas, config), pedidos, extracoes, listas };
 }
 
 async function main() {
@@ -68,18 +76,38 @@ async function main() {
   });
 
   // --- serviço
-  const texto = { ok: true, texto: 'Solicito Remicade e Mabthera', metodo: 'pdf-parse' };
+  const texto = { ok: true, texto: 'Solicito infliximabe (Remicade) e rituximabe (Mabthera)', metodo: 'pdf-parse' };
   const ok = servico(texto, IA);
   caso(
     'verificação ok: achados e avisos da IA, sem texto',
     await ok.verificacao.verificarDoSftp('guia.pdf', 'X', { medicamentos: MED, mascarar: ['JOAO'] }),
-    { ok: true, metodo: 'pdf-parse', modelo: 'teste', achados: ACHADOS, avisos: [AVISO_BAIXA] },
+    { ok: true, metodo: 'pdf-parse', modelo: 'teste', candidatos: 2, achados: ACHADOS, avisos: [AVISO_BAIXA] },
   );
-  caso('texto, lista e nomes a mascarar vão para a IA', ok.pedidos[0], {
+  caso('texto, só os candidatos da pré-busca e nomes a mascarar vão para a IA', ok.pedidos[0], {
     texto: texto.texto,
-    medicamentos: MED,
+    medicamentos: [MED[0], MED[2]],
     mascarar: ['JOAO'],
   });
+
+  // --- lista registrada (POST /medicamentos)
+  const porId = servico(texto, IA);
+  const reg = porId.listas.registrar(MED);
+  caso('mesma lista, mesmo listaId', porId.listas.registrar([...MED].reverse()).listaId, reg.listaId);
+  const rId = await porId.verificacao.verificarDoSftp('guia.pdf', 'X', { listaId: reg.listaId });
+  caso('verificação pelo listaId', [rId.ok, rId.candidatos, porId.pedidos[0].medicamentos.map((m) => m.codigo)], [
+    true,
+    2,
+    ['001', '004'],
+  ]);
+  caso(
+    'listaId desconhecido vira erro sem baixar o anexo',
+    [await porId.verificacao.verificarDoSftp('guia.pdf', 'X', { listaId: 'x' }), porId.extracoes.length],
+    [{ ok: false, erro: 'lista de medicamentos desconhecida: reenviar' }, 1],
+  );
+
+  const semCandidato = servico({ ok: true, texto: 'Solicito Remicade', metodo: 'pdf-parse' }, IA);
+  await semCandidato.verificacao.verificarDoSftp('guia.pdf', 'X', { medicamentos: MED });
+  caso('sem candidato a IA recebe lista vazia', semCandidato.pedidos[0].medicamentos, []);
 
   const comTexto = servico(texto, IA);
   const r = await comTexto.verificacao.verificar('guia.pdf', 'AAAA', { medicamentos: MED, retornarTexto: true });

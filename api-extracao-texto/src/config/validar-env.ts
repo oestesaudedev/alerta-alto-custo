@@ -65,6 +65,13 @@ export function validarEnv(config: Record<string, unknown>): Record<string, unkn
     }
   }
 
+  for (const nome of ['PRE_BUSCA_MAX_CANDIDATOS', 'PRE_BUSCA_DF_MAX']) {
+    const valor = texto(nome);
+    if (valor && !(Number.isInteger(Number(valor)) && Number(valor) > 0)) {
+      erros.push(`${nome} inválido: esperado inteiro maior que zero`);
+    }
+  }
+
   const criterio = criterioMedicamento(config.MEDICAMENTO_CRITERIO);
   if (!(CRITERIOS_MEDICAMENTO as readonly string[]).includes(criterio)) {
     erros.push(`MEDICAMENTO_CRITERIO inválido: ${criterio} (suportados: ${CRITERIOS_MEDICAMENTO.join(', ')})`);

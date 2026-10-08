@@ -14,15 +14,18 @@ import { TesseractOcr } from './ocr/tesseract.ocr';
 import { PastaTemporaria } from './pasta-temporaria';
 import { SftpService } from './sftp.service';
 import { ConfigController } from './verificacao/config.controller';
+import { ListaMedicamentosService } from './verificacao/lista-medicamentos.service';
+import { MedicamentosController } from './verificacao/medicamentos.controller';
 import { VerificacaoController } from './verificacao/verificacao.controller';
 import { VerificacaoService } from './verificacao/verificacao.service';
 import { ApiTokenGuard } from '../auth/api-token.guard';
 
 @Module({
-  controllers: [ExtracaoController, VerificacaoController, ConfigController],
+  controllers: [ExtracaoController, VerificacaoController, ConfigController, MedicamentosController],
   providers: [
     ExtracaoService,
     VerificacaoService,
+    ListaMedicamentosService,
     SftpService,
     IaService,
     ApiTokenGuard,

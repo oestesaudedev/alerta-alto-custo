@@ -52,7 +52,7 @@ Em `OS_MEDALTC.tlpp`:
 |---|---|
 | `__DATA_DBG` | `""` |
 | `__CODOBJ` | `""` |
-| `__MAIL_TO` | caixa da auditoria que vai receber os alertas |
+| `__MAIL_TO` | caixa(s) que vão receber os alertas, uma por elemento do array: `{"a@...", "b@..."}` |
 | `__CODDEP` | `"012"` |
 
 ### 2.2 RPO
@@ -135,6 +135,11 @@ Acompanhar as primeiras execuções no arquivo `\logpls\alto_custo_AAAAMMDD.log`
 | `ERROR` "API ocupada" | Fila de extração cheia (mais de 20 esperando) | Normal só com chamadas de fora do job. O job retoma sozinho |
 | `ERROR` "GET /config (flag da IA): ..." | API fora, token diferente ou API antiga sem o `/config` ("API sem o /config") | Nenhuma B71 é processada. Subir/atualizar a API ou conferir `Z_MEDAPIT` × `API_TOKEN`. O job retoma sozinho |
 | `ERROR` "Cannot POST /verificar-sftp" | Fonte atual no RPO com a API antiga | Atualizar a API (seção 1). O job retoma sozinho |
+| `ERROR` "POST /medicamentos: API sem o /medicamentos" ou "property listaId should not exist" | Fonte com a pré-busca no RPO e a API anterior | Atualizar a API (seção 1). O job retoma sozinho |
+| `ERROR` "POST /medicamentos: request entity too large" | Lista maior que o `BODY_LIMIT_LISTA` | Aumentar `BODY_LIMIT_LISTA` no `.env` e reiniciar a API |
+| `WARN` "API sem a lista de medicamentos (reiniciada?): reenviando" | A API reiniciou no meio da execução e perdeu a lista da memória | Informativo: o job reenvia a lista e repete o anexo |
+| `WARN` "N medicamento(s) sem palavra-chave" | Itens da lista cuja descrição e termos só têm unidade, forma ou palavras comuns | A pré-busca não os acha nos anexos; continuam alertados pelos procedimentos da guia. Conferir a BA8 se forem relevantes |
+| `WARN` "[pre-busca] ...: N candidatos na pre-busca" | O texto citou mais medicamentos da lista que o `PRE_BUSCA_MAX_CANDIDATOS` | A IA recebeu só os de maior pontuação. Conferir o anexo ou aumentar `PRE_BUSCA_MAX_CANDIDATOS` |
 | `ERROR` "property ia should not exist" | Patch intermediário no RPO com a API nova | Aplicar o patch atual do `OS_MEDALTC.tlpp`. O job retoma sozinho |
 | `ERROR` "IA indisponivel: ..." | IA ligada, mas Claude fora, timeout, chave inválida ou saída 443 bloqueada (ou o flag mudou no meio da execução) | O job para na B71 e a retoma na próxima execução. Ver o log da API (`IA falhou ...`). Para seguir só com os procedimentos, `IA_HABILITADA=false` + reiniciar a API |
 | `ERROR` "campo B53_TIPO nao existe no dicionario da B53" | Campo do tipo da guia ausente na base | Job parado nessa B71 até criar/ajustar o campo (ver `levantamento/07-b53-tipgui-itens.sql`) |

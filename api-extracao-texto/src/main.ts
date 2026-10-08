@@ -19,9 +19,11 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
   // Anexos em Base64 passam facilmente do limite padrão de 100kb do Express;
-  // sem o /extrair, os endpoints -sftp só recebem nome, ambiente, a lista de medicamentos e os nomes a mascarar.
+  // sem o /extrair, o maior body é o POST /medicamentos (lista completa, dezenas de milhares de itens).
   const base64 = extrairBase64Habilitado(config);
-  app.useBodyParser('json', { limit: base64 ? config.get<string>('BODY_LIMIT', '25mb') : '2mb' });
+  app.useBodyParser('json', {
+    limit: base64 ? config.get<string>('BODY_LIMIT', '25mb') : config.get<string>('BODY_LIMIT_LISTA', '20mb'),
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

@@ -99,7 +99,7 @@ Infra (fase 2): scripts em [`infra/`](../infra/README.md) — `setup-linux.sh` /
 | Pergunta | Resposta |
 |----------|----------|
 | `MEDICAMENTO_VALOR_MIN` escolhido (R$) | |
-| Qtd. medicamentos acima do valor (≤ 5000 com a IA ligada) | |
+| Qtd. medicamentos acima do valor (até 100000; a IA recebe só os candidatos da pré-busca) | |
 | Índice da BD4 começando por `FILIAL+CODTAB+CDPADP+CODPRO+CODIGO` existe? | Sim / Não |
 
 - [ ] Só se for usar o critério por valor

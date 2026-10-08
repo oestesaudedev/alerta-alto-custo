@@ -40,7 +40,8 @@ Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 | `PDF_MAX_PAGINAS`    | Não                | `30`                                          | Máximo de páginas de PDF escaneado passadas pelo OCR (o resto é ignorado, com aviso no log), para caber no `__API_TIMEOUT` do job |
 | `EXTRACAO_CONCORRENCIA` | Não             | `2`                                           | Extrações simultâneas (OCR usa muita CPU e memória). As demais esperam numa fila de até 20; acima disso a API responde "API ocupada" e o job tenta de novo na próxima execução |
 | `EXTRAIR_BASE64`     | Não                | `false`                                       | Habilita o `POST /extrair` (arquivo em Base64), usado só pelos testes (junto com o `POST /verificar`). O job usa o `/verificar-sftp`. Deixe `false` em produção     |
-| `BODY_LIMIT`         | Não                | `25mb`                                        | Tamanho máximo do JSON recebido quando `EXTRAIR_BASE64=true`. Com ele desligado, o limite é `2mb` (nome, ambiente, a lista de medicamentos e os nomes a mascarar) |
+| `BODY_LIMIT`         | Não                | `25mb`                                        | Tamanho máximo do JSON recebido quando `EXTRAIR_BASE64=true`. Com ele desligado, vale o `BODY_LIMIT_LISTA` |
+| `BODY_LIMIT_LISTA`   | Não                | `20mb`                                        | Tamanho máximo do JSON com `EXTRAIR_BASE64=false`. O maior pedido é a lista completa de medicamentos no `POST /medicamentos` (~4,6 MB para 30 mil itens) |
 | `IA_HABILITADA`      | Não                | `false` / `true`                              | Liga o Claude nos anexos (seção 1.1). O job lê o valor pelo `GET /config` a cada execução. `false` (padrão): o alerta sai só pelos procedimentos de alto custo lançados na guia e os anexos não são enviados. `true`: o Claude também confirma os procedimentos nos anexos e acrescenta medicamentos citados que não foram lançados |
 | `IA_PROVEDOR`        | Não                | `anthropic`                                   | Provedor da IA. Hoje só `anthropic`; outro valor impede a subida com `IA_HABILITADA=true`                                          |
 | `ANTHROPIC_API_KEY`  | Com a IA ligada    | `sk-ant-...`                                  | Chave da API da Anthropic. A API não sobe com `IA_HABILITADA=true` e a chave vazia                                                 |
@@ -48,7 +49,9 @@ Copy-Item api-extracao-texto\.env.example api-extracao-texto\.env
 | `IA_TIMEOUT_MS`      | Não                | `60000`                                       | Tempo máximo da chamada ao Claude (com 1 nova tentativa em 429/5xx dentro desse tempo). Somado ao OCR, precisa caber no `__API_TIMEOUT` (300 s) do job |
 | `IA_MAX_CHARS`       | Não                | `100000`                                      | Máximo de caracteres do texto do anexo enviados ao Claude. O resto não é lido: a API registra `WARN` e devolve o aviso `texto-cortado`, que o job registra no log |
 | `MEDICAMENTO_CRITERIO` | Não              | `altcus` / `valor`                            | Quais itens da BR8 (`BR8_CODPAD` em `__CODPAD_BR8`) entram na lista de medicamentos, lida pelo job no `GET /config` a cada execução. `altcus` (padrão): `BR8_ALTCUS = '1'`. `valor`: valor de tabela BD4 vigente maior que `MEDICAMENTO_VALOR_MIN` em alguma tabela/unidade (seção 2.5). Outro valor impede a subida |
-| `MEDICAMENTO_VALOR_MIN` | Com `valor`     | `1500.00`                                     | Valor mínimo em reais (ponto decimal), exclusivo: entra o item com `BD4_VALREF` **maior** que ele. A API não sobe com `MEDICAMENTO_CRITERIO=valor` e este vazio ou ≤ 0. Com a IA ligada, a lista não pode passar de 5000 itens: acima disso o job para sem avançar o `Z_NOTIENCA` e pede um valor maior |
+| `MEDICAMENTO_VALOR_MIN` | Com `valor`     | `1500.00`                                     | Valor mínimo em reais (ponto decimal), exclusivo: entra o item com `BD4_VALREF` **maior** que ele. A API não sobe com `MEDICAMENTO_CRITERIO=valor` e este vazio ou ≤ 0. Não há teto prático para a lista (até 100000 itens): a IA recebe só os candidatos da pré-busca de cada anexo |
+| `PRE_BUSCA_MAX_CANDIDATOS` | Não          | `300`                                         | Máximo de medicamentos achados pela pré-busca no texto do anexo e enviados ao Claude. Acima disso vão os de maior pontuação e o job registra `WARN [pre-busca]` |
+| `PRE_BUSCA_DF_MAX`   | Não                | `500`                                         | Palavra presente em mais itens da lista que isto não traz candidato sozinha (só soma pontos). Evita que nomes genéricos repetidos em centenas de itens mandem todos à IA |
 
 As impressões digitais do SFTP (`SFTP_*_HOSTKEY`) são obrigatórias para o perfil cujo `HOST` estiver preenchido. Para conferir ou atualizar (se a TOTVS trocar a chave do servidor, a API passa a responder "chave do servidor SFTP ... não confere" e o job para até o `.env` ser corrigido):
 
@@ -138,15 +141,17 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 
 | Constante       | Valor atual                      | Para que serve                                                                                                                                                                                                                                               |
 | --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `__MAIL_TO`     | `michel.ramos@oestesaude.com.br` | Destinatário do e-mail de alerta                                                                                                                                                                                                                             |
+| `__MAIL_TO`     | `{"michel.ramos@oestesaude.com.br"}` | Destinatários do e-mail de alerta, um elemento do array por e-mail (ex.: `{"a@oestesaude.com.br", "b@oestesaude.com.br"}`). Lista vazia bloqueia o job                                                                                                                                                                                                                           |
 | `__API_URL`     | `fApiUrl()`                      | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6177` (`__URL_PROD`); qualquer outro usa `__URL_DEV`. O caminho é `__API_PATH` (`/verificar-sftp`). Mudar exige recompilar |
 | `__CODDEP`      | `{"012"}`                        | Departamentos filtrados na B71 (`B71_CODDEP IN (...)`). Array vazio (`{}`) = todos os departamentos                                                                                                                                                          |
 | `__CODOBJ`      | `""` (vazio)                     | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio                                                                                                                                                                     |
 | `__LOG_DIR` / `__LOG_ARQ` | `"\logpls\"` / `"alto_custo"` | Log em arquivo, um por dia: `\logpls\alto_custo_AAAAMMDD.log` no RootPath, com as mesmas linhas do console. Gravado pela função padrão do PLS `PlsPtuLog`; se ela não existir no RPO, o fonte grava por conta própria em `__LOG_DIR`. A pasta é criada sozinha; os arquivos antigos são apagados manualmente |
 | `__DATA_DBG`    | `""` (vazio)                     | Depuração: preenchido com `AAAAMMDD`, a B71 é filtrada por essa data em vez de hoje (teste com B71 antiga). Em produção, deixe vazio                                                                                                                         |
-| `__CPO_NOMES` / `__CPO_MATRIC` | `{"_NOMUSR", "_NOMSOL"}` / `{"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}` | Sufixos dos campos da tabela de origem da guia (prefixo = alias, ex.: `BEA_NOMUSR`) com os nomes e a matrícula que a API mascara antes de enviar o texto ao Claude. Campo que não existir no dicionário é ignorado |
+| `__CPO_NOMES` / `__CPO_MATRIC` | `{"_NOMUSR", "_NOMSOL"}` / `{"_OPEUSR", "_CODEMP", "_MATRIC", "_TIPREG", "_DIGITO"}` | Sufixos dos campos da tabela de origem da guia (prefixo = alias, ex.: `BEA_NOMUSR`) com os nomes e a matrícula que a API mascara antes de enviar o texto ao Claude. Campo que não existir no dicionário é ignorado. O nome do beneficiário (`_NOMUSR` ou `BA1_NOMUSR` pela matrícula) também vai no e-mail |
+| `__CPO_DATENT` | `{"_DTDIGI", "_DATDIG", "_DATSOL"}` | Sufixos tentados na tabela de origem da guia, na ordem, para a "Data da solicitação" do e-mail (data em que a guia entrou no sistema). Vale o primeiro que existir e estiver preenchido; nenhum: `n/d`. Conferir com `levantamento/08-campos-data-entrada.sql` |
 | `__API_TIMEOUT` | `300`                            | Tempo máximo (segundos) de espera pela API por anexo. Timeout conta como falha temporária (a B71 é retomada), por isso a API limita o OCR a `PDF_MAX_PAGINAS`                                                                                                |
 | `__CFG_PATH`    | `/config`                        | Caminho do `GET` que informa se a IA está ligada na API (mesma URL base do `__API_URL`)                                                                                                                                                                     |
+| `__LST_PATH`    | `/medicamentos`                  | Caminho do `POST` com a lista completa de medicamentos, enviado no primeiro anexo de cada execução (mesma URL base). Devolve o `listaId` usado no `__API_PATH` |
 | `__TIP_BE2` / `__TIP_BQV` | `{1, 2, 3, 4, 5, 7}` / `11` | `B53_TIPO` cujos itens ficam na BE2; `11` com `B71_ALIMOV = B4Q` usa a BQV; os demais, a B4C (seção 2.5)                                                                                                                                           |
 | `__NUMGUI_PT`   | `{4, 4, 2, 8}`                   | Partes do `B53_NUMGUI` (OPEMOV + ANOAUT + MESAUT + NUMAUT) usadas como chave dos itens da guia                                                                                                                                                              |
 | `__CODPAD_BR8`  | `{"00", "20", "18"}`             | Tabelas padrão (`BR8_CODPAD`) consideradas no alto custo: lista de medicamentos (BR8/BA8/BD4) e procedimentos da guia. Item com `BR8_ALTCUS = '1'` em outro CODPAD vai só para o log, como ignorado                                                        |
@@ -171,21 +176,26 @@ Execuções simultâneas são bloqueadas pelo próprio job (`LockByName`). Para 
 
 ### 2.4 E-mail (SMTP)
 
-O job envia pelo SMTP padrão do Protheus, lendo os parâmetros SX6 abaixo (os mesmos usados pelos envios de e-mail que já funcionam). Normalmente já estão preenchidos; confira antes do teste.
+O job envia pela conta `sistema@oestesaude.com.br`, com a configuração fixa nas constantes `__SMTP_*` do fonte. Os parâmetros `MV_REL*` do Protheus não são usados.
 
 
-| Parâmetro    | Tipo | Exemplo                   | Para que serve                                                    |
-| ------------ | ---- | ------------------------- | ----------------------------------------------------------------- |
-| `MV_RELSERV` | C    | `smtp.empresa.com.br:587` | Servidor SMTP. A porta pode vir depois de `:` (sem porta, usa 25) |
-| `MV_RELACNT` | C    | `protheus@empresa.com.br` | Conta usada para autenticar                                       |
-| `MV_RELPSW`  | C    | —                         | Senha da conta                                                    |
-| `MV_RELAUTH` | L    | `.T.`                     | Se o servidor exige autenticação                                  |
-| `MV_RELSSL`  | L    | `.F.`                     | Conexão SSL                                                       |
-| `MV_RELTLS`  | L    | `.T.`                     | Conexão TLS (comum na porta 587)                                  |
-| `MV_RELFROM` | C    | `protheus@empresa.com.br` | Remetente. Vazio: usa `MV_RELACNT`                                |
+| Constante      | Valor                       | Para que serve                         |
+| -------------- | --------------------------- | -------------------------------------- |
+| `__SMTP_HOST`  | `sender.skymail.net.br`     | Servidor SMTP                          |
+| `__SMTP_PORTA` | `587`                       | Porta                                  |
+| `__SMTP_USER`  | `sistema@oestesaude.com.br` | Conta usada para autenticar            |
+| `__SMTP_SENHA` | (no fonte)                  | Senha da conta                         |
+| `__SMTP_FROM`  | `__SMTP_USER`               | Remetente                              |
+| `__SMTP_AUTH`  | `.T.`                       | Se o servidor exige autenticação       |
+| `__SMTP_SSL`   | `.F.`                       | Conexão SSL                            |
+| `__SMTP_TLS`   | `.T.`                       | Conexão TLS (porta 587)                |
 
 
-O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum item de alto custo foi encontrado. A coluna "Detecção" diz de onde veio o item (Procedimento, Procedimento + IA ou Anexo (IA)); "Qtd" e "Valor na guia" vêm dos itens da guia. "Valor de tabela" é uma mini-tabela com uma linha por tabela de preço e unidade vigentes (Valor = `BD4_VALREF`, Tabela = `BD4_CODTAB`, Descrição e Tp.Pad do cadastro `__TAB_ALIAS`, Unid. = `BD4_CODIGO`, Vigência = "Vigente (sem fim)", "Vigente até ..." ou "Encerrada em ..." pelo `BD4_VIGFIM`, com a linha encerrada em cinza; a vigência é só informativa, a escolha da linha continua pelo maior `BD4_VIGINI` ≤ hoje); sem preço sai `sem valor na tabela`, e sem os campos da BD4 sai `n/d`. Com a IA ligada, a coluna "Observação IA" traz a confirmação, a confiança e o motivo dados pelo Claude (ex.: "confirmado pela IA: IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
+O destinatário é a constante `__MAIL_TO` do fonte (seção 2.2). É enviado **um e-mail por movimentação B71** em que algum item de alto custo foi encontrado. A coluna "Detecção" diz de onde veio o item (Procedimento, Procedimento + IA ou Anexo (IA)); "Qtd" e "Valor na guia" vêm dos itens da guia. "Valor de tabela" é uma mini-tabela com uma linha por tabela de preço e unidade vigentes (Valor = `BD4_VALREF`, Tabela = `BD4_CODTAB`, Descrição e Tp.Pad do cadastro `__TAB_ALIAS`, Unid. = `BD4_CODIGO`, Vigência = "Vigente (sem fim)" ou "Vigente até ..." pelo `BD4_VIGFIM`; linhas com `BD4_VIGFIM` antes de hoje não aparecem. A escolha da linha continua pelo maior `BD4_VIGINI` ≤ hoje, e o critério VALOR não olha o `BD4_VIGFIM`); sem preço em tabela vigente sai `sem valor em tabela vigente`, e sem os campos da BD4 sai `n/d`. Com a IA ligada, a coluna "Observação IA" traz a confirmação, a confiança e o motivo dados pelo Claude (ex.: "confirmado pela IA: IA (media): nome comercial de infliximabe"). Se o envio falhar, o job não avança o `Z_NOTIENCA` e tenta de novo na próxima execução.
+
+O corpo é enviado como `text/html` e só em ASCII: acentos fixos usam entidades HTML e os textos vindos do banco (nome do beneficiário, descrição da BR8...) têm os caracteres acentuados convertidos em entidades numéricas (`&#227;`), então aparecem certos em qualquer cliente de e-mail, independentemente do charset.
+
+**Teste de envio:** `U_chkMEDALTC` só conecta e autentica. Para confirmar que a mensagem chega, rode `U_mailMEDALTC()` (envia para `__MAIL_TO`) ou `U_mailMEDALTC("a@oestesaude.com.br;b@oestesaude.com.br")`. Ele não consulta B71 nem grava o `Z_NOTIENCA`; confira a caixa de entrada, o spam e se os acentos da linha de teste saíram corretos.
 
 ### 2.5 Procedimentos da guia (camada antes da IA)
 
@@ -215,8 +225,8 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 
 | Origem                                | Destino                            | Porta                 | Para quê                         |
 | ------------------------------------- | ---------------------------------- | --------------------- | -------------------------------- |
-| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `GET /config` e `POST /verificar-sftp` |
-| AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `GET /config` e `POST /verificar-sftp` |
+| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `GET /config`, `POST /medicamentos` e `POST /verificar-sftp` |
+| AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `GET /config`, `POST /medicamentos` e `POST /verificar-sftp` |
 | Máquina da API                        | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos (só com a IA ligada) |
 | Máquina da API                        | `api.anthropic.com`                | `443` (HTTPS)         | A API chama o Claude (só com a IA ligada) |
 
@@ -239,7 +249,8 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 - [ ] SX6 `Z_NOTIENCA` cadastrado
 - [ ] SX6 `Z_MEDAPIT` cadastrado com o mesmo valor do `API_TOKEN`
 - [ ] `U_chkMEDALTC` com `[OK] Flag da IA` mostrando o estado esperado; com a IA ligada, `U_chkMEDALTC("arquivo.pdf")` com `[OK] Verificacao de arquivo.pdf (extracao + IA)`
-- [ ] Parâmetros SMTP `MV_REL*` conferidos (seção 2.4)
+- [ ] `U_chkMEDALTC` com `[OK] SMTP (sender.skymail.net.br)` (seção 2.4)
+- [ ] `U_mailMEDALTC()` com `Teste de e-mail OK` e a mensagem recebida (fora do spam, acentos corretos)
 - [ ] Valor de tabela conferido com `levantamento/05-campos-valor.sql` (BD4); campo ausente só deixa a coluna como `n/d`
 - [ ] AppServer alcançando a API: `localhost:3010` fora da produção, `10.1.5.14:6177` no `CYWSXT_PROD` (a linha `Config: ambiente ... | API ...` do log mostra a URL escolhida)
 - [ ] `OS_MEDALTC.tlpp` compilado no RPO

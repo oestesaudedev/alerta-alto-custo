@@ -100,12 +100,13 @@ export class IaService {
       return { ok: false, erro: 'IA desabilitada (IA_HABILITADA)' };
     }
     const lista = medicamentos.filter((m) => m.codigo?.trim());
+    const cortado = texto.length > this.maxChars;
+    // Lista vazia (pré-busca sem candidato) ou texto vazio: nada a perguntar ao Claude
     if (!lista.length || !texto.trim()) {
-      return { ok: true, modelo: this.modelo.nome, achados: [] };
+      return { ok: true, modelo: this.modelo.nome, achados: [], ...(cortado && { cortado }) };
     }
 
     const protegidas = palavrasProtegidas(lista.flatMap((m) => [m.descricao, ...(m.termos ?? [])]));
-    const cortado = texto.length > this.maxChars;
     if (cortado) {
       this.logger.warn(`Texto com ${texto.length} caracteres: a IA lê só os primeiros ${this.maxChars} (IA_MAX_CHARS)`);
     }

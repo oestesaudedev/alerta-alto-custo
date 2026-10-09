@@ -78,8 +78,8 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
    | `IA_HABILITADA` / `ANTHROPIC_API_KEY` | `false`: alerta só pelos procedimentos da guia. `true` + a chave da Anthropic: o Claude também verifica os anexos (exige saída HTTPS para `api.anthropic.com`). Modelo em `IA_MODELO` (padrão `claude-sonnet-5-5`; `claude-haiku-4-5` custa menos). Mudar exige reiniciar a API |
 
 3. Subir a API:
-   - **Docker**: produção com `docker compose --env-file infra/producao.env -f infra/docker-compose.yml up -d --build` (`10.1.5.14:6177`, definidos em `infra/producao.env`); dev/testes acrescentando `-f infra/docker-compose.dev.yml` (monta `test/` e habilita o `POST /extrair`) → `http://localhost:3010`. Sem `API_BIND_IP`, a porta fica só em `127.0.0.1`. Gera a imagem `alerta-alto-custo` e sobe o container `api-extracao-texto`; `docker ps` deve mostrar `healthy` (`GET /health`).
-   - **Linux + pm2** (produção): `sudo APPSERVER_IP=<ip do AppServer> bash infra/setup-linux.sh`, `bash infra/verify-infra.sh`, build em `/opt/api-extracao-texto` e `pm2 start infra/ecosystem.config.cjs --env production` (porta `6177`). Não coloque `API_TOKEN` no `ecosystem.config.cjs`: a variável do pm2 venceria o `.env`.
+   - **Docker**: produção com `docker compose --env-file infra/producao.env -f infra/docker-compose.yml up -d --build` (`10.1.5.14:6180`, definidos em `infra/producao.env`); dev/testes acrescentando `-f infra/docker-compose.dev.yml` (monta `test/` e habilita o `POST /extrair`) → `http://localhost:3010`. Sem `API_BIND_IP`, a porta fica só em `127.0.0.1`. Gera a imagem `alerta-alto-custo` e sobe o container `api-extracao-texto`; `docker ps` deve mostrar `healthy` (`GET /health`).
+   - **Linux + pm2** (produção): `sudo APPSERVER_IP=<ip do AppServer> bash infra/setup-linux.sh`, `bash infra/verify-infra.sh`, build em `/opt/api-extracao-texto` e `pm2 start infra/ecosystem.config.cjs --env production` (porta `6180`). Não coloque `API_TOKEN` no `ecosystem.config.cjs`: a variável do pm2 venceria o `.env`.
 4. Testar: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (Windows/Docker) ou `npm run test:amostras && npm run test:e2e` (Linux).
 
 ### 2. Protheus
@@ -97,7 +97,7 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
    | Constante | Conferir |
    |---|---|
    | `__MAIL_TO` | Caixa que recebe os alertas (hoje aponta para um e-mail pessoal) |
-   | `__ENV_PROD` / `__URL_PROD` | Ambiente `CYWSXT_PROD` usa `http://10.1.5.14:6177`; qualquer outro usa `__URL_DEV` (`http://localhost:3010`) |
+   | `__ENV_PROD` / `__URL_PROD` | Ambiente `CYWSXT_PROD` usa `http://10.1.5.14:6180`; qualquer outro usa `__URL_DEV` (`http://localhost:3010`) |
    | `__CODDEP` | Departamentos da B71 (`{"012"}`; `{}` = todos) |
    | `__DATA_DBG` / `__CODOBJ` | Filtros de depuração. **Vazios em produção** |
 
@@ -109,12 +109,12 @@ A referência completa, com todos os parâmetros, está em [configuracoes.md](co
 
 | Origem | Destino | Porta |
 |---|---|---|
-| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14` (API) | `6177` |
+| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14` (API) | `6180` |
 | AppServer dos demais ambientes | `localhost` (API na mesma máquina) | `3010` |
 | Máquina da API | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` |
 | Máquina da API | `api.anthropic.com` | `443` |
 
-Não exponha a porta da API na internet. Em produção, libere a `6177` só para o IP do AppServer. Com Docker, a regra vai na chain `DOCKER-USER`, porque o Docker ignora o `ufw` ([implantacao/README.md](implantacao/README.md), passo 1.5).
+Não exponha a porta da API na internet. Em produção, libere a `6180` só para o IP do AppServer. Com Docker, a regra vai na chain `DOCKER-USER`, porque o Docker ignora o `ufw` ([implantacao/README.md](implantacao/README.md), passo 1.5).
 
 ## Funções do Protheus
 

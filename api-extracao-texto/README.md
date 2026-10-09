@@ -160,7 +160,7 @@ A API baixa `SFTP_DIR/arquivo` do SFTP do ambiente (`PROD` quando `ambiente` = `
 - Extensão não suportada é recusada antes do download
 - Falha de conexão/autenticação no SFTP também volta como `{ ok: false, erro }`
 
-URL no Protheus, definida no fonte pelo ambiente: `CYWSXT_PROD` → `http://10.1.5.14:6177/verificar-sftp` (API em produção na porta 6177); qualquer outro → `__URL_DEV` + `/verificar-sftp`
+URL no Protheus, definida no fonte pelo ambiente: `CYWSXT_PROD` → `http://10.1.5.14:6180/verificar-sftp` (API em produção na porta 6180); qualquer outro → `__URL_DEV` + `/verificar-sftp`
 
 ### IA (Claude)
 
@@ -259,7 +259,7 @@ docker exec -e SFTP_ARQUIVO="nome-do-arquivo.pdf" api-extracao-texto node test/e
 
 ```bash
 cp .env.example .env    # obrigatório; defina API_TOKEN e SFTP_*
-# produção em 10.1.5.14:6177 (infra/producao.env; sem test/ no container, /extrair desligado)
+# produção em 10.1.5.14:6180 (infra/producao.env; sem test/ no container, /extrair desligado)
 docker compose --env-file ../infra/producao.env -f ../infra/docker-compose.yml up -d --build
 # dev/testes (monta test/ em /app/test e liga o /extrair)
 docker compose -f ../infra/docker-compose.yml -f ../infra/docker-compose.dev.yml up -d --build

@@ -89,14 +89,14 @@ A primeira verificação é sempre a dos procedimentos lançados na guia (seçã
 
 - O compose lê o `.env` da API (`env_file`), então token e SFTP valem também para o container.
 - `PORT`, `OCR_TMP_DIR`, `PDF_MIN_TEXT_CHARS`, `PDF_MAX_PAGINAS`, `BODY_LIMIT` e `EXTRAIR_BASE64` estão fixos no compose e **têm precedência** sobre o `.env`.
-- Porta exposta no computador: `API_HOST_PORT` (padrão `3010`), só na interface `API_BIND_IP` (padrão `127.0.0.1`). Em produção use `API_BIND_IP=10.1.5.14` e `API_HOST_PORT=6177`, a porta que o Protheus `CYWSXT_PROD` chama.
+- Porta exposta no computador: `API_HOST_PORT` (padrão `3010`), só na interface `API_BIND_IP` (padrão `127.0.0.1`). Em produção use `API_BIND_IP=10.1.5.14` e `API_HOST_PORT=6180`, a porta que o Protheus `CYWSXT_PROD` chama.
 - O Docker não respeita as regras do `ufw`. Em produção, restrinja a porta ao AppServer na chain `DOCKER-USER` (`implantacao/README.md`, passo 1.5).
 - O `.env` é obrigatório: sem ele o compose não sobe.
 - `infra/docker-compose.dev.yml` (override de dev) monta `api-extracao-texto/test` no container e habilita o `POST /extrair` para os testes da fase 4.
 
 ```powershell
 # produção
-$env:API_BIND_IP = '10.1.5.14'; $env:API_HOST_PORT = 6177; docker compose -f infra/docker-compose.yml up -d --build
+$env:API_BIND_IP = '10.1.5.14'; $env:API_HOST_PORT = 6180; docker compose -f infra/docker-compose.yml up -d --build
 # dev/testes
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
 ```
@@ -106,7 +106,7 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d
 ### Rodando com pm2 (`infra/ecosystem.config.cjs`)
 
 - A API lê o `.env` da pasta `cwd` (`/opt/api-extracao-texto/.env`).
-- Porta: `3010` no `env` de desenvolvimento e `6177` no `env_production` (`--env production`).
+- Porta: `3010` no `env` de desenvolvimento e `6180` no `env_production` (`--env production`).
 - O `ecosystem.config.cjs` **não** define `API_TOKEN`: variável de ambiente do pm2 venceria o `.env`. Não acrescente o token nele.
 
 ---
@@ -142,7 +142,7 @@ Ficam como `#DEFINE` no topo do fonte. Alterar exige recompilar.
 | Constante       | Valor atual                      | Para que serve                                                                                                                                                                                                                                               |
 | --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `__MAIL_TO`     | `{"michel.ramos@oestesaude.com.br"}` | Destinatários do e-mail de alerta, um elemento do array por e-mail (ex.: `{"a@oestesaude.com.br", "b@oestesaude.com.br"}`). Lista vazia bloqueia o job                                                                                                                                                                                                                           |
-| `__API_URL`     | `fApiUrl()`                      | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6177` (`__URL_PROD`); qualquer outro usa `__URL_DEV`. O caminho é `__API_PATH` (`/verificar-sftp`). Mudar exige recompilar |
+| `__API_URL`     | `fApiUrl()`                      | Endereço da API, escolhido pelo ambiente do Protheus (`GetEnvServer()`): `CYWSXT_PROD` (`__ENV_PROD`) usa `http://10.1.5.14:6180` (`__URL_PROD`); qualquer outro usa `__URL_DEV`. O caminho é `__API_PATH` (`/verificar-sftp`). Mudar exige recompilar |
 | `__CODDEP`      | `{"012"}`                        | Departamentos filtrados na B71 (`B71_CODDEP IN (...)`). Array vazio (`{}`) = todos os departamentos                                                                                                                                                          |
 | `__CODOBJ`      | `""` (vazio)                     | Filtro de depuração: preenchido, processa só esse `ACB_CODOBJ`. Em produção, deixe vazio                                                                                                                                                                     |
 | `__LOG_DIR` / `__LOG_ARQ` | `"\logpls\"` / `"alto_custo"` | Log em arquivo, um por dia: `\logpls\alto_custo_AAAAMMDD.log` no RootPath, com as mesmas linhas do console. Gravado pela função padrão do PLS `PlsPtuLog`; se ela não existir no RPO, o fonte grava por conta própria em `__LOG_DIR`. A pasta é criada sozinha; os arquivos antigos são apagados manualmente |
@@ -225,15 +225,15 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 
 | Origem                                | Destino                            | Porta                 | Para quê                         |
 | ------------------------------------- | ---------------------------------- | --------------------- | -------------------------------- |
-| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6177` (TCP)          | O job chama `GET /config`, `POST /medicamentos` e `POST /verificar-sftp` |
+| AppServer de produção (`CYWSXT_PROD`) | `10.1.5.14`                        | `6180` (TCP)          | O job chama `GET /config`, `POST /medicamentos` e `POST /verificar-sftp` |
 | AppServer dos demais ambientes        | a própria máquina (`localhost`)    | `3010` (TCP)          | O job chama `GET /config`, `POST /medicamentos` e `POST /verificar-sftp` |
 | Máquina da API                        | `SFTP_PROD_HOST` / `SFTP_DEV_HOST` | `2323` / `1151` (TCP) | A API baixa os anexos (só com a IA ligada) |
 | Máquina da API                        | `api.anthropic.com`                | `443` (HTTPS)         | A API chama o Claude (só com a IA ligada) |
 
 
 - Fora do `CYWSXT_PROD` o job usa `localhost:3010`, então a API precisa estar na **mesma máquina** do AppServer desse ambiente.
-- Em produção a API roda em `10.1.5.14` na porta `6177` (pm2 com `--env production`, ou Docker com `API_HOST_PORT=6177`).
-- Não exponha a porta da API na internet. Em produção, libere a `6177` só para o IP do AppServer (pm2: `ufw`, aplicado pelo `setup-linux.sh` com `APPSERVER_IP`; Docker: chain `DOCKER-USER`).
+- Em produção a API roda em `10.1.5.14` na porta `6180` (pm2 com `--env production`, ou Docker com `API_HOST_PORT=6180`).
+- Não exponha a porta da API na internet. Em produção, libere a `6180` só para o IP do AppServer (pm2: `ufw`, aplicado pelo `setup-linux.sh` com `APPSERVER_IP`; Docker: chain `DOCKER-USER`).
 
 ---
 
@@ -244,7 +244,7 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 - [ ] `api-extracao-texto/.env` criado com `API_TOKEN` (32+ caracteres), `SFTP_DIR`, as `SFTP_PROD_*` (produção) ou `SFTP_DEV_*` (dev), incluindo o `*_HOSTKEY`, e `IA_HABILITADA` decidido (`true` exige `ANTHROPIC_API_KEY`)
 - [ ] Com a IA ligada: saída 443 da máquina da API para `api.anthropic.com`
 - [ ] `B53_TIPO` e os campos dos itens (BE2, BQV, B4C) conferidos com `levantamento/07-b53-tipgui-itens.sql`
-- [ ] API no ar (Docker ou pm2) e respondendo em `http://localhost:3010` (dev) ou `http://10.1.5.14:6177` (produção)
+- [ ] API no ar (Docker ou pm2) e respondendo em `http://localhost:3010` (dev) ou `http://10.1.5.14:6180` (produção)
 - [ ] Teste da API: `.\api-extracao-texto\test\e2e\rodar-fase4.ps1` (todos os testes OK)
 - [ ] SX6 `Z_NOTIENCA` cadastrado
 - [ ] SX6 `Z_MEDAPIT` cadastrado com o mesmo valor do `API_TOKEN`
@@ -252,7 +252,7 @@ Para cada B71, o job resolve a guia, localiza a **B53** pelo `B53_NUMGUI` (a mai
 - [ ] `U_chkMEDALTC` com `[OK] SMTP (sender.skymail.net.br)` (seção 2.4)
 - [ ] `U_mailMEDALTC()` com `Teste de e-mail OK` e a mensagem recebida (fora do spam, acentos corretos)
 - [ ] Valor de tabela conferido com `levantamento/05-campos-valor.sql` (BD4); campo ausente só deixa a coluna como `n/d`
-- [ ] AppServer alcançando a API: `localhost:3010` fora da produção, `10.1.5.14:6177` no `CYWSXT_PROD` (a linha `Config: ambiente ... | API ...` do log mostra a URL escolhida)
+- [ ] AppServer alcançando a API: `localhost:3010` fora da produção, `10.1.5.14:6180` no `CYWSXT_PROD` (a linha `Config: ambiente ... | API ...` do log mostra a URL escolhida)
 - [ ] `OS_MEDALTC.tlpp` compilado no RPO
 - [ ] `U_chkMEDALTC` com todas as verificações `[OK]` (roteiro em `teste-integrado/README.md`)
 - [ ] `U_tstMEDALTC` terminando com `Teste integrado OK` e um único e-mail por B71

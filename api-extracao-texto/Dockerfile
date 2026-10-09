@@ -19,7 +19,7 @@ RUN apt-get update \
 WORKDIR /app
 # API_TOKEN e SFTP_* vêm do .env (env_file do compose), nunca da imagem
 ENV NODE_ENV=production \
-    PORT=3010 \
+    PORT=6180 \
     OCR_TMP_DIR=/tmp/ocr-extracao
 
 RUN mkdir -p /tmp/ocr-extracao && chown node:node /tmp/ocr-extracao
@@ -28,7 +28,7 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 
 USER node
-EXPOSE 3010
+EXPOSE 6180
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3010)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||6180)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/main.js"]

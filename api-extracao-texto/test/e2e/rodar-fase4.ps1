@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Falha ao subir o container da API' }
 
 Write-Host 'Aguardando a API...'
 for ($i = 0; $i -lt 30; $i++) {
-    docker exec api-extracao-texto node -e "fetch('http://localhost:3010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>$null
+    docker exec api-extracao-texto node -e "fetch('http://localhost:6180/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>$null
     if ($LASTEXITCODE -eq 0) { break }
     Start-Sleep -Seconds 1
 }

@@ -7,7 +7,7 @@ NODE_MAJOR="${NODE_MAJOR:-22}"
 APP_USER="${APP_USER:-ocr}"
 APP_DIR="${APP_DIR:-/opt/api-extracao-texto}"
 TMP_DIR="${TMP_DIR:-/var/tmp/ocr-extracao}"
-API_PORT="${API_PORT:-6177}"
+API_PORT="${API_PORT:-6180}"
 APPSERVER_IP="${APPSERVER_IP:-}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -70,6 +70,6 @@ Próximos passos (fase 3):
   3. pm2 start ecosystem.config.cjs --env production
   4. pm2 save && pm2 startup
 
-Porta: o pm2 com --env production sobe na 6177 (Protheus CYWSXT_PROD chama http://10.1.5.14:6177/verificar-sftp).
+Porta: o pm2 com --env production sobe na 6180 (Protheus CYWSXT_PROD chama http://10.1.5.14:6180/verificar-sftp).
 API_TOKEN e SFTP_* ficam em ${APP_DIR}/.env (chmod 600).
 EOF
